@@ -1,0 +1,182 @@
+# Configuration for RunPod with A100 GPU
+# Optimized for maximum performance on A100 40GB/80GB
+
+# Inherit from dataset v6.1 configuration
+defaults:
+  - dataset_v6.1
+
+# RunPod specific paths
+dataset_path: "/workspace/datasets/DATASET_CLASSIFICATION"
+output_path: "/workspace/outputs/v6.1"
+checkpoint_path: "/workspace/checkpoints/v6.1"
+cache_dir: "/workspace/cache/v6.1"
+
+# Alternative: Mount from Google Drive
+# dataset_path: "/workspace/drive/MyDrive/CAASI-DATASET/DATASET_CLASSIFICATION"
+
+# RETFound weights - RunPod paths
+weights_paths:
+  cfp: "/workspace/weights/RETFound_mae_natureCFP.pth"
+  oct: "/workspace/weights/RETFound_mae_natureOCT.pth"
+  meh: "/workspace/weights/RETFound_mae_meh.pth"
+
+# A100 optimized training configuration
+training:
+  # For A100 40GB
+  batch_size: 32
+  gradient_accumulation: 2  # Effective batch size = 64
+  
+  # For A100 80GB (if available)
+  # batch_size: 64
+  # gradient_accumulation: 1
+  
+  # Full training
+  epochs: 100
+  
+  # A100 can handle more frequent validation
+  val_frequency: 1
+  save_frequency: 5
+
+# Optimizer - optimal for A100
+optimizer:
+  base_lr: 5e-5
+  
+  # Can be more aggressive with scheduler on A100
+  scheduler:
+    warmup_epochs: 5
+    warmup_lr: 1e-7
+
+# A100 specific optimizations
+optimizations:
+  # Use bfloat16 on A100
+  use_amp: true
+  amp_dtype: "bfloat16"
+  
+  # Enable torch.compile for A100
+  use_compile: true
+  compile_mode: "max-autotune"  # Best performance, slower first epoch
+  
+  # A100 has enough memory, so gradient checkpointing optional
+  use_gradient_checkpointing: false  # Disable for faster training
+  
+  # Enable TF32 for A100
+  enable_tf32: true
+  
+  # CUDA settings
+  cudnn_benchmark: true
+  cudnn_deterministic: false
+
+# Data loading - maximize for RunPod
+dataloader:
+  num_workers: 12  # RunPod usually has good CPUs
+  pin_memory: true
+  persistent_workers: true
+  prefetch_factor: 4
+
+# Multi-GPU support (if using multi-GPU RunPod instance)
+distributed:
+  enabled: false  # Set to true for multi-GPU
+  backend: "nccl"
+  
+  # For multi-GPU, adjust batch size
+  # batch_size: 16  # Per GPU
+  # gradient_accumulation: 1
+
+# Advanced A100 features
+a100_optimizations:
+  # Memory format
+  memory_format: "channels_last"
+  
+  # Automatic mixed precision settings
+  amp_growth_interval: 2000
+  
+  # NVIDIA Apex optimizations (if installed)
+  use_apex: false
+  apex_opt_level: "O2"
+
+# Monitoring - full logging on RunPod
+logging:
+  log_interval: 25
+  use_tensorboard: true
+  use_wandb: true
+  
+  # RunPod specific paths
+  log_dir: "/workspace/logs"
+  tensorboard_dir: "/workspace/runs"
+  
+  # Detailed logging
+  log_grad_norm: true
+  log_learning_rate: true
+  log_gpu_memory: true
+
+# Validation configuration
+validation:
+  # Can afford more validation on A100
+  val_batch_size_multiplier: 2  # 2x training batch size
+  
+  # Compute all metrics
+  compute_confusion_matrix: true
+  compute_roc_curves: true
+  compute_calibration_curves: true
+
+# Testing configuration  
+testing:
+  # Larger batch for testing
+  test_batch_size_multiplier: 4
+  
+  # Full TTA on A100
+  use_tta: true
+  tta_augmentations: 10  # More augmentations
+
+# Export configuration
+export:
+  # Export all formats on RunPod
+  formats: ["torchscript", "onnx", "tensorrt"]
+  
+  # TensorRT optimization for deployment
+  tensorrt:
+    enabled: true
+    fp16: true
+    workspace_gb: 8
+
+# RunPod specific features
+runpod:
+  # Auto-shutdown after training
+  auto_shutdown: false
+  shutdown_delay_minutes: 10
+  
+  # Backup checkpoints to cloud
+  backup_to_cloud: true
+  cloud_backup_frequency: 10  # Every 10 epochs
+  
+  # S3/GCS paths for backup (configure as needed)
+  # s3_bucket: "s3://your-bucket/checkpoints"
+  # gcs_bucket: "gs://your-bucket/checkpoints"
+
+# Performance profiling
+profiling:
+  enabled: false  # Enable for performance analysis
+  profile_batches: [10, 50, 100]
+  trace_memory: true
+  export_chrome_trace: true
+
+# Environment setup commands (run before training)
+setup_commands:
+  - "pip install -U torch torchvision --index-url https://download.pytorch.org/whl/cu118"
+  - "pip install tensorrt"  # Optional, for TensorRT export
+  - "apt-get update && apt-get install -y libgl1-mesa-glx"  # For OpenCV
+
+# Resource monitoring
+monitoring:
+  log_gpu_stats: true
+  log_cpu_stats: true
+  log_memory_stats: true
+  stats_interval: 60  # Log every 60 seconds
+
+# Notes
+notes: |
+  - Optimized for RunPod A100 40GB/80GB instances
+  - Uses bfloat16 mixed precision (A100 feature)
+  - torch.compile enabled with max-autotune
+  - Adjust batch_size if using different GPU
+  - Enable distributed.enabled for multi-GPU training

@@ -3,7 +3,7 @@ Dataset Classes for RETFound
 ===========================
 
 Implements dataset classes for loading retinal images with advanced features
-including caching, pathology-aware augmentation, and automatic class detection.
+including caching, pathology-aware augmentation, and support for dataset v6.1.
 """
 
 import os
@@ -31,6 +31,12 @@ except ImportError:
 
 from ..core.registry import Registry
 from ..core.exceptions import DatasetNotFoundError, DataCorruptedError
+from ..core.constants import (
+    FUNDUS_CLASS_NAMES, OCT_CLASS_NAMES, UNIFIED_CLASS_NAMES,
+    FUNDUS_CLASS_TO_IDX, OCT_CLASS_TO_IDX, UNIFIED_CLASS_TO_IDX,
+    NUM_FUNDUS_CLASSES, NUM_OCT_CLASSES, NUM_TOTAL_CLASSES,
+    IMAGE_EXTENSIONS, DATASET_V61_STATS
+)
 
 logger = logging.getLogger(__name__)
 
@@ -121,247 +127,223 @@ class BaseDataset(Dataset, ABC):
         return self.classes
 
 
-@register_dataset("retfound")
-@register_dataset("caasi")
-class RETFoundDataset(BaseDataset):
+@register_dataset("retfound_v61")
+@register_dataset("caasi_v61")
+class CAASIDatasetV61(BaseDataset):
     """
-    RETFound dataset with CAASI structure support
+    CAASI Dataset v6.1 - Supports both Fundus and OCT images
     
     Expected structure:
     root/
-    ├── train/
-    │   ├── 0_normal/
-    │   ├── 1_dr_mild/
-    │   └── ...
-    ├── val/
-    └── test/
+    ├── fundus/
+    │   ├── train/
+    │   │   ├── 00_Normal_Fundus/
+    │   │   ├── 01_DR_Mild/
+    │   │   └── ... (18 classes)
+    │   ├── val/
+    │   └── test/
+    └── oct/
+        ├── train/
+        │   ├── 00_Normal_OCT/
+        │   ├── 01_DME/
+        │   └── ... (10 classes)
+        ├── val/
+        └── test/
     """
-    
-    # CAASI-specific class name mapping
-    CAASI_CLASS_MAPPING = {
-        # Diabetic Retinopathy stages
-        'normal': 0, '0_normal': 0, 'normal_fundus': 0,
-        'mild': 1, '1_mild': 1, 'dr_mild': 1, '1_dr_mild': 1,
-        'moderate': 2, '2_moderate': 2, 'dr_moderate': 2, '2_dr_moderate': 2,
-        'severe': 3, '3_severe': 3, 'dr_severe': 3, '3_dr_severe': 3,
-        'proliferative': 4, '4_proliferative': 4, 'dr_proliferative': 4, '4_dr_proliferative': 4,
-        
-        # OCT pathologies
-        'normal_oct': 5, '5_normal_oct': 5,
-        'amd': 6, '6_amd': 6, 'age_related_macular_degeneration': 6,
-        'dme': 7, '7_dme': 7, 'diabetic_macular_edema': 7, 'dme_fundus': 7,
-        'erm': 8, '8_erm': 8, 'epiretinal_membrane': 8,
-        'rao': 9, '9_rao': 9, 'retinal_artery_occlusion': 9,
-        'rvo': 10, '10_rvo': 10, 'retinal_vein_occlusion': 10,
-        'vid': 11, '11_vid': 11, 'vitreomacular_interface_disease': 11,
-        'cnv': 12, '12_cnv': 12, 'choroidal_neovascularization': 12,
-        'dme_oct': 13, '13_dme_oct': 13,
-        'drusen': 14, '14_drusen': 14,
-        
-        # Glaucoma
-        'glaucoma_normal': 15, '15_glaucoma_normal': 15,
-        'glaucoma_positive': 16, '16_glaucoma_positive': 16,
-        'glaucoma_suspect': 17, '17_glaucoma_suspect': 17,
-        
-        # Additional conditions
-        'myopia': 18, '18_myopia': 18,
-        'cataract': 19, '19_cataract': 19,
-        'retinal_detachment': 20, '20_retinal_detachment': 20,
-        'other': 21, '21_other': 21
-    }
-    
-    # Proper class names for display
-    CLASS_NAMES = {
-        0: 'Normal_Fundus',
-        1: 'DR_Mild',
-        2: 'DR_Moderate', 
-        3: 'DR_Severe',
-        4: 'DR_Proliferative',
-        5: 'Normal_OCT',
-        6: 'AMD',
-        7: 'DME_Fundus',
-        8: 'ERM',
-        9: 'RAO',
-        10: 'RVO',
-        11: 'VID',
-        12: 'CNV',
-        13: 'DME_OCT',
-        14: 'DRUSEN',
-        15: 'Glaucoma_Normal',
-        16: 'Glaucoma_Positive',
-        17: 'Glaucoma_Suspect',
-        18: 'Myopia',
-        19: 'Cataract',
-        20: 'Retinal_Detachment',
-        21: 'Other'
-    }
     
     def __init__(
         self,
         root: Union[str, Path],
         split: str = 'train',
+        modality: str = 'both',  # 'fundus', 'oct', or 'both'
         transform: Optional[Callable] = None,
         target_transform: Optional[Callable] = None,
         use_cache: bool = True,
         cache_dir: Optional[Union[str, Path]] = None,
         pathology_augmentation: Optional[Any] = None,
-        image_extensions: Optional[set] = None,
+        unified_classes: bool = True,  # Use unified 28-class system
+        return_metadata: bool = False,
         **kwargs
     ):
         """
-        Initialize RETFound dataset
+        Initialize CAASI Dataset v6.1
         
         Args:
-            root: Root directory of dataset
+            root: Root directory containing 'fundus' and 'oct' folders
             split: Dataset split ('train', 'val', 'test')
+            modality: Which images to load ('fundus', 'oct', or 'both')
             transform: Image transform
             target_transform: Target transform
             use_cache: Whether to use caching
             cache_dir: Cache directory
             pathology_augmentation: Pathology-specific augmentation
-            image_extensions: Valid image extensions
+            unified_classes: Use unified 28-class system
+            return_metadata: Return additional metadata with each sample
         """
+        self.modality = modality
         self.use_cache = use_cache
         self.cache_dir = Path(cache_dir) if cache_dir else None
         self.pathology_augmentation = pathology_augmentation
-        self.image_extensions = image_extensions or {
-            '.jpg', '.jpeg', '.png', '.bmp', '.tif', '.tiff'
-        }
+        self.unified_classes = unified_classes
+        self.return_metadata = return_metadata
+        
+        # Additional data storage
+        self.modalities = []  # Store modality for each sample
+        self.num_classes = 0
         
         # Set up cache
         if self.use_cache and self.cache_dir:
-            self.cache_dir = self.cache_dir / split
+            self.cache_dir = self.cache_dir / f"{modality}_{split}"
             self.cache_dir.mkdir(parents=True, exist_ok=True)
         
         super().__init__(root, split, transform, target_transform, **kwargs)
+        
+        # Calculate class weights for balanced sampling
+        self._calculate_class_weights()
     
     def _load_data(self):
-        """Load dataset following CAASI structure"""
-        split_dir = self.root / self.split
+        """Load dataset following v6.1 structure"""
+        loaded_fundus = 0
+        loaded_oct = 0
         
-        if not split_dir.exists():
-            raise DatasetNotFoundError(
-                f"Split directory not found: {split_dir}"
-            )
+        # Load fundus images
+        if self.modality in ['fundus', 'both']:
+            fundus_dir = self.root / 'fundus' / self.split
+            if fundus_dir.exists():
+                loaded_fundus = self._load_modality(
+                    fundus_dir, 'fundus', FUNDUS_CLASS_NAMES, FUNDUS_CLASS_TO_IDX
+                )
+            else:
+                logger.warning(f"Fundus directory not found: {fundus_dir}")
         
-        # Check for class subfolders
-        subfolders = sorted([
-            f for f in split_dir.iterdir()
-            if f.is_dir() and not f.name.startswith('.')
-        ])
-        
-        if not subfolders:
-            # Try flat structure with CSV labels
-            self._load_flat_structure(split_dir)
-        else:
-            # Load hierarchical structure
-            self._load_hierarchical_structure(split_dir, subfolders)
+        # Load OCT images
+        if self.modality in ['oct', 'both']:
+            oct_dir = self.root / 'oct' / self.split
+            if oct_dir.exists():
+                loaded_oct = self._load_modality(
+                    oct_dir, 'oct', OCT_CLASS_NAMES, OCT_CLASS_TO_IDX
+                )
+            else:
+                logger.warning(f"OCT directory not found: {oct_dir}")
         
         # Validate dataset
         if not self.data:
             raise DatasetNotFoundError(
-                f"No images found in {split_dir}"
+                f"No images found for modality '{self.modality}' in split '{self.split}'"
             )
         
-        # Set up classes
+        # Set up classes based on mode
         self._setup_classes()
         
         # Log dataset info
+        logger.info(f"Loaded {loaded_fundus} fundus and {loaded_oct} OCT images")
+        logger.info(f"Total samples: {len(self.data)}, Classes: {self.num_classes}")
         self._log_dataset_info()
     
-    def _load_hierarchical_structure(self, split_dir: Path, subfolders: List[Path]):
-        """Load dataset with class folders"""
-        class_counts = defaultdict(int)
+    def _load_modality(
+        self, 
+        base_dir: Path, 
+        modality: str, 
+        class_names: List[str],
+        class_to_idx: Dict[str, int]
+    ) -> int:
+        """Load images from a single modality"""
+        count = 0
         
-        logger.info(f"Loading {self.split} with {len(subfolders)} class folders")
-        
-        for class_folder in subfolders:
-            class_name = class_folder.name.lower()
-            
-            # Map class name to label
-            label = self._get_label_from_name(class_name)
-            if label is None:
-                logger.warning(f"Unknown class: {class_name}, skipping...")
+        for class_name in class_names:
+            class_dir = base_dir / class_name
+            if not class_dir.exists():
+                logger.warning(f"Class directory not found: {class_dir}")
                 continue
             
-            # Load images from class folder
-            img_count = 0
-            for img_path in class_folder.iterdir():
-                if img_path.suffix.lower() in self.image_extensions:
-                    self.data.append(str(img_path))
-                    self.targets.append(label)
-                    img_count += 1
+            # Get all valid images
+            image_files = [
+                f for f in class_dir.iterdir()
+                if f.suffix.lower() in IMAGE_EXTENSIONS
+            ]
             
-            class_counts[label] += img_count
-            if img_count > 0:
-                logger.info(
-                    f"   {class_folder.name}: {img_count} images → label {label}"
-                )
-    
-    def _load_flat_structure(self, split_dir: Path):
-        """Load dataset with flat structure and CSV labels"""
-        # Look for labels CSV
-        labels_file = split_dir / 'labels.csv'
-        if labels_file.exists():
-            self._load_from_csv(split_dir, labels_file)
-        else:
-            raise DatasetNotFoundError(
-                f"No class folders or labels.csv found in {split_dir}"
-            )
-    
-    def _load_from_csv(self, split_dir: Path, labels_file: Path):
-        """Load dataset from CSV file"""
-        import csv
+            for img_path in image_files:
+                # Original class index within modality
+                modality_class_idx = class_to_idx[class_name]
+                
+                # Calculate unified class index if needed
+                if self.unified_classes:
+                    if modality == 'fundus':
+                        unified_idx = modality_class_idx
+                    else:  # oct
+                        unified_idx = NUM_FUNDUS_CLASSES + modality_class_idx
+                else:
+                    unified_idx = modality_class_idx
+                
+                self.data.append(str(img_path))
+                self.targets.append(unified_idx)
+                self.modalities.append(modality)
+                count += 1
         
-        with open(labels_file, 'r') as f:
-            reader = csv.DictReader(f)
-            for row in reader:
-                img_path = split_dir / row['filename']
-                if img_path.exists():
-                    self.data.append(str(img_path))
-                    self.targets.append(int(row['label']))
-    
-    def _get_label_from_name(self, class_name: str) -> Optional[int]:
-        """Get label from class name"""
-        # Try direct mapping
-        if class_name in self.CAASI_CLASS_MAPPING:
-            return self.CAASI_CLASS_MAPPING[class_name]
-        
-        # Try to extract numeric prefix
-        if '_' in class_name:
-            try:
-                return int(class_name.split('_')[0])
-            except ValueError:
-                pass
-        
-        return None
+        return count
     
     def _setup_classes(self):
-        """Set up class names and mappings"""
-        unique_labels = sorted(set(self.targets))
-        max_label = max(unique_labels) if unique_labels else 0
+        """Set up class names and mappings based on configuration"""
+        if self.unified_classes:
+            self.classes = UNIFIED_CLASS_NAMES
+            self.class_to_idx = UNIFIED_CLASS_TO_IDX
+            self.num_classes = NUM_TOTAL_CLASSES
+        else:
+            if self.modality == 'fundus':
+                self.classes = FUNDUS_CLASS_NAMES
+                self.class_to_idx = FUNDUS_CLASS_TO_IDX
+                self.num_classes = NUM_FUNDUS_CLASSES
+            elif self.modality == 'oct':
+                self.classes = OCT_CLASS_NAMES
+                self.class_to_idx = OCT_CLASS_TO_IDX
+                self.num_classes = NUM_OCT_CLASSES
+            else:  # both but not unified
+                # Combine class names
+                self.classes = FUNDUS_CLASS_NAMES + OCT_CLASS_NAMES
+                self.num_classes = NUM_FUNDUS_CLASSES + NUM_OCT_CLASSES
+                # Create new mapping
+                self.class_to_idx = {
+                    name: idx for idx, name in enumerate(self.classes)
+                }
         
-        # Create class names
-        self.classes = []
-        for i in range(max_label + 1):
-            if i in self.CLASS_NAMES:
-                self.classes.append(self.CLASS_NAMES[i])
-            else:
-                self.classes.append(f'Class_{i}')
-        
-        # Create class to index mapping
-        self.class_to_idx = {cls: i for i, cls in enumerate(self.classes)}
-        self.idx_to_class = {i: cls for cls, i in self.class_to_idx.items()}
+        self.idx_to_class = {idx: name for name, idx in self.class_to_idx.items()}
     
-    def _log_dataset_info(self):
-        """Log dataset information"""
+    def _calculate_class_weights(self):
+        """Calculate class weights for balanced sampling"""
         class_counts = defaultdict(int)
         for label in self.targets:
             class_counts[label] += 1
         
+        # Calculate weights
+        total_samples = len(self.targets)
+        num_active_classes = len(class_counts)
+        
+        self.class_weights = torch.zeros(self.num_classes)
+        for class_idx, count in class_counts.items():
+            weight = total_samples / (num_active_classes * count)
+            self.class_weights[class_idx] = weight
+        
+        # Normalize weights
+        self.class_weights = self.class_weights / self.class_weights.mean()
+    
+    def _log_dataset_info(self):
+        """Log dataset information"""
+        class_counts = defaultdict(int)
+        modality_counts = defaultdict(int)
+        
+        for i, label in enumerate(self.targets):
+            class_counts[label] += 1
+            modality_counts[self.modalities[i]] += 1
+        
         logger.info(f"\nDataset Summary for {self.split}:")
         logger.info(f"   Total images: {len(self.data):,}")
-        logger.info(f"   Number of classes: {len(set(self.targets))}")
+        logger.info(f"   Modality: {self.modality}")
+        logger.info(f"   Number of classes: {self.num_classes}")
+        
+        if self.modality == 'both':
+            logger.info(f"   Fundus images: {modality_counts['fundus']:,}")
+            logger.info(f"   OCT images: {modality_counts['oct']:,}")
+        
         logger.info(f"   Class distribution:")
         
         for label in sorted(class_counts.keys()):
@@ -369,14 +351,14 @@ class RETFoundDataset(BaseDataset):
             class_name = self.classes[label] if label < len(self.classes) else f"Class_{label}"
             percentage = (count / len(self.data)) * 100
             logger.info(
-                f"      {class_name} (label {label}): "
-                f"{count:,} images ({percentage:.1f}%)"
+                f"      {class_name}: {count:,} ({percentage:.1f}%)"
             )
     
-    def __getitem__(self, index: int) -> Tuple[Any, Any]:
-        """Get item with caching support"""
+    def __getitem__(self, index: int) -> Union[Tuple[Any, Any], Tuple[Any, Any, Dict]]:
+        """Get item with caching and metadata support"""
         img_path = self.data[index]
         target = self.targets[index]
+        modality = self.modalities[index]
         
         # Try cache first
         if self.use_cache and self.cache_dir:
@@ -404,7 +386,16 @@ class RETFoundDataset(BaseDataset):
         if self.target_transform is not None:
             target = self.target_transform(target)
         
-        return image, target
+        # Return based on configuration
+        if self.return_metadata:
+            metadata = {
+                'path': img_path,
+                'modality': modality,
+                'class_name': self.classes[target] if target < len(self.classes) else str(target)
+            }
+            return image, target, metadata
+        else:
+            return image, target
     
     def _load_from_cache(self, img_path: str) -> np.ndarray:
         """Load image from cache or create cache entry"""
@@ -432,18 +423,8 @@ class RETFoundDataset(BaseDataset):
         return image
     
     def get_class_weights(self) -> torch.Tensor:
-        """Calculate class weights for imbalanced datasets"""
-        class_counts = np.bincount(self.targets)
-        total_samples = len(self.targets)
-        num_classes = len(class_counts)
-        
-        # Calculate weights
-        weights = total_samples / (num_classes * class_counts)
-        
-        # Normalize
-        weights = weights / weights.mean()
-        
-        return torch.FloatTensor(weights)
+        """Get calculated class weights for balanced training"""
+        return self.class_weights
     
     def get_imbalance_ratio(self) -> float:
         """Get imbalance ratio (max/min class frequency)"""
@@ -454,6 +435,50 @@ class RETFoundDataset(BaseDataset):
             return 1.0
         
         return float(class_counts.max()) / float(class_counts.min())
+    
+    def get_subset_by_modality(self, modality: str) -> 'CAASIDatasetV61':
+        """Get a subset of the dataset for a specific modality"""
+        if modality not in ['fundus', 'oct']:
+            raise ValueError(f"Invalid modality: {modality}")
+        
+        # Filter indices
+        indices = [
+            i for i, m in enumerate(self.modalities) if m == modality
+        ]
+        
+        # Create new dataset with filtered data
+        subset = CAASIDatasetV61(
+            root=self.root,
+            split=self.split,
+            modality=modality,
+            transform=self.transform,
+            target_transform=self.target_transform,
+            use_cache=self.use_cache,
+            cache_dir=self.cache_dir.parent if self.cache_dir else None,
+            pathology_augmentation=self.pathology_augmentation,
+            unified_classes=self.unified_classes,
+            return_metadata=self.return_metadata
+        )
+        
+        # Override data with filtered subset
+        subset.data = [self.data[i] for i in indices]
+        subset.targets = [self.targets[i] for i in indices]
+        subset.modalities = [self.modalities[i] for i in indices]
+        
+        return subset
+
+
+# Register legacy names for backward compatibility
+@register_dataset("retfound")
+@register_dataset("caasi")
+class RETFoundDataset(CAASIDatasetV61):
+    """Legacy dataset class for backward compatibility"""
+    
+    def __init__(self, *args, **kwargs):
+        logger.warning(
+            "RETFoundDataset is deprecated. Use CAASIDatasetV61 instead."
+        )
+        super().__init__(*args, **kwargs)
 
 
 def create_dataset(
@@ -501,3 +526,47 @@ def get_dataset_info(dataset_name: str) -> Dict[str, Any]:
         'class': dataset_class.__name__,
         'description': dataset_class.__doc__ or "No description available"
     }
+
+
+def get_dataset_stats(dataset_path: Union[str, Path]) -> Dict[str, Any]:
+    """Get statistics about the dataset v6.1"""
+    dataset_path = Path(dataset_path)
+    stats = {
+        'fundus': {'train': 0, 'val': 0, 'test': 0, 'total': 0},
+        'oct': {'train': 0, 'val': 0, 'test': 0, 'total': 0},
+        'total': {'train': 0, 'val': 0, 'test': 0, 'total': 0},
+        'classes': {'fundus': {}, 'oct': {}}
+    }
+    
+    for modality in ['fundus', 'oct']:
+        for split in ['train', 'val', 'test']:
+            split_dir = dataset_path / modality / split
+            if not split_dir.exists():
+                continue
+            
+            # Count images per class
+            for class_dir in split_dir.iterdir():
+                if not class_dir.is_dir():
+                    continue
+                
+                count = len([
+                    f for f in class_dir.iterdir()
+                    if f.suffix.lower() in IMAGE_EXTENSIONS
+                ])
+                
+                stats[modality][split] += count
+                stats['total'][split] += count
+                
+                if class_dir.name not in stats['classes'][modality]:
+                    stats['classes'][modality][class_dir.name] = {
+                        'train': 0, 'val': 0, 'test': 0, 'total': 0
+                    }
+                stats['classes'][modality][class_dir.name][split] = count
+    
+    # Calculate totals
+    for modality in ['fundus', 'oct', 'total']:
+        stats[modality]['total'] = sum(
+            stats[modality][split] for split in ['train', 'val', 'test']
+        )
+    
+    return stats

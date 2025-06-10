@@ -1,589 +1,541 @@
 """
-Predict Command
-===============
-
-CLI command for making predictions with trained RETFound models.
+Predict command for RETFound CLI.
+Supports prediction with models trained on v6.1 dataset (28 classes).
 """
 
-import logging
-from pathlib import Path
-from typing import List, Dict, Any, Optional, Union
+import argparse
 import json
+from pathlib import Path
+from typing import Dict, List, Union
+
 import torch
-import numpy as np
 from PIL import Image
 import pandas as pd
-from tqdm import tqdm
-import time
 
-from retfound.core.config import RETFoundConfig
-from retfound.models.factory import create_model
-from retfound.data.transforms import create_eval_transform
-from retfound.export.inference import TTAWrapper
-from retfound.utils.logging import setup_logging
-from retfound.utils.device import get_device
+from ...core.constants import DATASET_V61_CLASSES, CRITICAL_CONDITIONS
+from ...export.inference import RETFoundPredictor
+from ...utils.logging import get_logger
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 
-def add_predict_args(parser):
-    """Add prediction-specific arguments to parser"""
-    parser.add_argument('input', type=str,
-                       help='Input image, directory, or CSV file with image paths')
-    parser.add_argument('--checkpoint', type=str, required=True,
-                       help='Path to model checkpoint')
-    parser.add_argument('--output', type=str, default=None,
-                       help='Output file (JSON or CSV)')
-    parser.add_argument('--config', type=str, default=None,
-                       help='Path to config file (if different from checkpoint)')
-    parser.add_argument('--batch-size', type=int, default=32,
-                       help='Batch size for prediction')
-    parser.add_argument('--top-k', type=int, default=5,
-                       help='Return top-k predictions')
-    parser.add_argument('--threshold', type=float, default=None,
-                       help='Confidence threshold for predictions')
-    parser.add_argument('--use-tta', action='store_true',
-                       help='Use test-time augmentation')
-    parser.add_argument('--tta-augmentations', type=int, default=5,
-                       help='Number of TTA augmentations')
-    parser.add_argument('--use-ema', action='store_true',
-                       help='Use EMA model if available')
-    parser.add_argument('--device', type=str, default='cuda',
-                       help='Device to use for prediction')
-    parser.add_argument('--format', type=str, default='auto',
-                       choices=['auto', 'json', 'csv', 'detailed'],
-                       help='Output format')
-    parser.add_argument('--include-probabilities', action='store_true',
-                       help='Include all class probabilities')
-    parser.add_argument('--visualize', action='store_true',
-                       help='Create visualization of predictions')
-    parser.add_argument('--recursive', action='store_true',
-                       help='Recursively search directories for images')
-    parser.add_argument('--extensions', nargs='+', 
-                       default=['.jpg', '.jpeg', '.png', '.bmp', '.tiff'],
-                       help='Image file extensions to process')
-
-
-class RETFoundPredictor:
-    """Predictor class for RETFound models"""
+def add_predict_args(parser: argparse.ArgumentParser):
+    """Add predict command arguments."""
+    parser.add_argument(
+        'input',
+        type=str,
+        help='Input image path, directory, or CSV file with image paths'
+    )
     
-    def __init__(self, checkpoint_path: str, config: Optional[RETFoundConfig] = None,
-                 device: str = 'cuda', use_ema: bool = False):
-        self.device = get_device(device)
+    # Model arguments
+    parser.add_argument(
+        '--model',
+        type=str,
+        required=True,
+        help='Path to exported model (.onnx, .pt, .trt) or checkpoint (.pth)'
+    )
+    parser.add_argument(
+        '--metadata',
+        type=str,
+        help='Path to model metadata JSON (auto-detected if not provided)'
+    )
+    
+    # Prediction options
+    parser.add_argument(
+        '--batch-size',
+        type=int,
+        default=1,
+        help='Batch size for prediction'
+    )
+    parser.add_argument(
+        '--top-k',
+        type=int,
+        default=5,
+        help='Number of top predictions to show'
+    )
+    parser.add_argument(
+        '--threshold',
+        type=float,
+        default=0.5,
+        help='Confidence threshold for predictions'
+    )
+    parser.add_argument(
+        '--check-critical',
+        action='store_true',
+        default=True,
+        help='Check for critical conditions'
+    )
+    
+    # Output options
+    parser.add_argument(
+        '--output',
+        type=str,
+        help='Output file for predictions (CSV or JSON)'
+    )
+    parser.add_argument(
+        '--output-format',
+        type=str,
+        default='auto',
+        choices=['auto', 'csv', 'json'],
+        help='Output format'
+    )
+    parser.add_argument(
+        '--save-probabilities',
+        action='store_true',
+        help='Save all class probabilities'
+    )
+    parser.add_argument(
+        '--clinical-report',
+        action='store_true',
+        help='Generate clinical-style report for predictions'
+    )
+    
+    # Device options
+    parser.add_argument(
+        '--device',
+        type=str,
+        default='cuda',
+        choices=['cpu', 'cuda', 'tensorrt'],
+        help='Device to use for inference'
+    )
+    parser.add_argument(
+        '--gpu',
+        type=int,
+        default=0,
+        help='GPU index to use'
+    )
+    
+    # Display options
+    parser.add_argument(
+        '--verbose',
+        action='store_true',
+        help='Show detailed predictions'
+    )
+    parser.add_argument(
+        '--quiet',
+        action='store_true',
+        help='Suppress output except errors'
+    )
+
+
+def run_predict(args: argparse.Namespace) -> List[Dict]:
+    """
+    Run predict command.
+    
+    Args:
+        args: Command line arguments
         
-        # Load checkpoint
-        logger.info(f"Loading checkpoint from {checkpoint_path}")
-        self.checkpoint = torch.load(checkpoint_path, map_location='cpu')
-        
-        # Load or create config
-        if config is None:
-            if 'config' in self.checkpoint:
-                self.config = RETFoundConfig(**self.checkpoint['config'])
-            else:
-                raise ValueError("No configuration found in checkpoint")
+    Returns:
+        List of prediction results
+    """
+    if not args.quiet:
+        logger.info("=" * 60)
+        logger.info("RETFound Prediction")
+        logger.info("=" * 60)
+    
+    # Setup device
+    if args.device == 'cuda':
+        if torch.cuda.is_available():
+            torch.cuda.set_device(args.gpu)
+            device = f'cuda:{args.gpu}'
+            if not args.quiet:
+                logger.info(f"Using GPU: {torch.cuda.get_device_name(args.gpu)}")
         else:
-            self.config = config
-        
-        # Create and load model
-        self.model = create_model(self.config)
-        
-        if use_ema and 'ema_state_dict' in self.checkpoint:
-            logger.info("Loading EMA model weights")
-            self.model.load_state_dict(self.checkpoint['ema_state_dict'])
-        else:
-            logger.info("Loading regular model weights")
-            self.model.load_state_dict(self.checkpoint['model_state_dict'])
-        
-        self.model = self.model.to(self.device)
-        self.model.eval()
-        
-        # Get class names
-        self.class_names = self.checkpoint.get('class_names', 
-                                               [f'Class_{i}' for i in range(self.config.num_classes)])
-        
-        # Temperature scaling
-        self.temperature = self.checkpoint.get('temperature', 1.0)
-        if self.temperature != 1.0:
-            logger.info(f"Using temperature scaling: {self.temperature}")
-        
-        # Create transform
-        self.transform = create_eval_transform(self.config)
-        
-        # TTA wrapper
-        self.tta_wrapper = None
-    
-    def enable_tta(self, num_augmentations: int = 5):
-        """Enable test-time augmentation"""
-        tta_config = self.config.copy()
-        tta_config.tta_augmentations = num_augmentations
-        self.tta_wrapper = TTAWrapper(self.model, tta_config, self.device)
-        logger.info(f"TTA enabled with {num_augmentations} augmentations")
-    
-    def preprocess_image(self, image_path: Union[str, Path]) -> torch.Tensor:
-        """Preprocess single image"""
-        image = Image.open(image_path).convert('RGB')
-        
-        # Apply transforms
-        if hasattr(self.transform, '__call__'):
-            # Albumentations
-            image_np = np.array(image)
-            augmented = self.transform(image=image_np)
-            image_tensor = augmented['image']
-        else:
-            # torchvision
-            image_tensor = self.transform(image)
-        
-        return image_tensor
-    
-    def predict_single(self, image_path: Union[str, Path], top_k: int = 5) -> Dict[str, Any]:
-        """Predict for single image"""
-        image_path = Path(image_path)
-        
-        # Preprocess
-        image_tensor = self.preprocess_image(image_path)
-        image_batch = image_tensor.unsqueeze(0).to(self.device)
-        
-        # Predict
-        start_time = time.time()
-        
-        with torch.no_grad():
-            if self.tta_wrapper:
-                # TTA prediction
-                probs = self.tta_wrapper.predict(image_batch)
-                logits = torch.log(probs / (1 - probs + 1e-8))  # Inverse softmax
-            else:
-                # Regular prediction
-                logits = self.model(image_batch)
-                logits = logits / self.temperature
-                probs = torch.softmax(logits, dim=1)
-        
-        inference_time = (time.time() - start_time) * 1000  # ms
-        
-        # Get top predictions
-        probs_cpu = probs[0].cpu()
-        top_probs, top_indices = torch.topk(probs_cpu, k=min(top_k, len(self.class_names)))
-        
-        # Build result
-        result = {
-            'image': str(image_path),
-            'predicted_class': top_indices[0].item(),
-            'predicted_label': self.class_names[top_indices[0].item()],
-            'confidence': top_probs[0].item(),
-            'top_k_predictions': [],
-            'inference_time_ms': inference_time
-        }
-        
-        for i in range(len(top_indices)):
-            result['top_k_predictions'].append({
-                'class_id': top_indices[i].item(),
-                'class_name': self.class_names[top_indices[i].item()],
-                'probability': top_probs[i].item()
-            })
-        
-        return result
-    
-    def predict_batch(self, image_paths: List[Path], batch_size: int = 32,
-                     show_progress: bool = True) -> List[Dict[str, Any]]:
-        """Predict for batch of images"""
-        results = []
-        
-        # Process in batches
-        num_batches = (len(image_paths) + batch_size - 1) // batch_size
-        
-        iterator = range(0, len(image_paths), batch_size)
-        if show_progress:
-            iterator = tqdm(iterator, total=num_batches, desc="Processing batches")
-        
-        for i in iterator:
-            batch_paths = image_paths[i:i+batch_size]
-            
-            # Preprocess batch
-            batch_tensors = []
-            valid_paths = []
-            
-            for path in batch_paths:
-                try:
-                    tensor = self.preprocess_image(path)
-                    batch_tensors.append(tensor)
-                    valid_paths.append(path)
-                except Exception as e:
-                    logger.warning(f"Failed to process {path}: {e}")
-                    results.append({
-                        'image': str(path),
-                        'error': str(e)
-                    })
-            
-            if not batch_tensors:
-                continue
-            
-            # Stack and predict
-            batch = torch.stack(batch_tensors).to(self.device)
-            
-            with torch.no_grad():
-                if self.tta_wrapper:
-                    # TTA for batch - process individually
-                    batch_probs = []
-                    for j in range(batch.size(0)):
-                        probs = self.tta_wrapper.predict(batch[j:j+1])
-                        batch_probs.append(probs)
-                    probs = torch.cat(batch_probs, dim=0)
-                else:
-                    logits = self.model(batch)
-                    logits = logits / self.temperature
-                    probs = torch.softmax(logits, dim=1)
-            
-            # Process results
-            for j, path in enumerate(valid_paths):
-                pred_idx = probs[j].argmax().item()
-                pred_conf = probs[j, pred_idx].item()
-                
-                result = {
-                    'image': str(path),
-                    'predicted_class': pred_idx,
-                    'predicted_label': self.class_names[pred_idx],
-                    'confidence': pred_conf
-                }
-                
-                results.append(result)
-        
-        return results
-
-
-def find_images(input_path: Path, extensions: List[str], recursive: bool = False) -> List[Path]:
-    """Find all images in directory"""
-    images = []
-    
-    if recursive:
-        for ext in extensions:
-            images.extend(input_path.rglob(f'*{ext}'))
-            images.extend(input_path.rglob(f'*{ext.upper()}'))
+            device = 'cpu'
+            logger.warning("CUDA not available, falling back to CPU")
     else:
-        for ext in extensions:
-            images.extend(input_path.glob(f'*{ext}'))
-            images.extend(input_path.glob(f'*{ext.upper()}'))
+        device = args.device
+        if not args.quiet:
+            logger.info(f"Using device: {device}")
     
-    return sorted(list(set(images)))
-
-
-def load_image_list_from_csv(csv_path: Path) -> List[Path]:
-    """Load image paths from CSV file"""
-    df = pd.read_csv(csv_path)
+    # Get input images
+    image_paths = _get_input_images(args.input)
+    if not args.quiet:
+        logger.info(f"Found {len(image_paths)} images to process")
     
-    # Try to find image path column
-    path_columns = ['image_path', 'path', 'filename', 'image', 'file']
-    
-    image_column = None
-    for col in path_columns:
-        if col in df.columns:
-            image_column = col
-            break
-    
-    if image_column is None:
-        # Use first column
-        image_column = df.columns[0]
-        logger.warning(f"No standard image path column found, using '{image_column}'")
-    
-    # Get paths
-    image_paths = df[image_column].tolist()
-    
-    # Convert to Path objects and check existence
-    valid_paths = []
-    for path_str in image_paths:
-        path = Path(path_str)
-        if path.exists():
-            valid_paths.append(path)
-        else:
-            logger.warning(f"Image not found: {path}")
-    
-    logger.info(f"Loaded {len(valid_paths)} valid image paths from CSV")
-    return valid_paths
-
-
-def format_results(results: List[Dict[str, Any]], format_type: str,
-                  include_probabilities: bool = False,
-                  threshold: Optional[float] = None) -> Union[str, pd.DataFrame]:
-    """Format results for output"""
-    
-    # Filter by threshold if specified
-    if threshold is not None:
-        results = [r for r in results if 'confidence' in r and r['confidence'] >= threshold]
-    
-    if format_type == 'csv':
-        # Convert to DataFrame
-        rows = []
-        for r in results:
-            row = {
-                'image': r['image'],
-                'predicted_label': r.get('predicted_label', 'ERROR'),
-                'confidence': r.get('confidence', 0.0)
-            }
-            
-            if 'error' in r:
-                row['error'] = r['error']
-            
-            if include_probabilities and 'top_k_predictions' in r:
-                for pred in r['top_k_predictions']:
-                    row[f"prob_{pred['class_name']}"] = pred['probability']
-            
-            rows.append(row)
-        
-        return pd.DataFrame(rows)
-    
-    elif format_type == 'detailed':
-        # Detailed text format
-        lines = []
-        lines.append("="*70)
-        lines.append("RETFOUND PREDICTION RESULTS")
-        lines.append("="*70)
-        lines.append(f"Total images: {len(results)}")
-        
-        if threshold:
-            lines.append(f"Confidence threshold: {threshold:.2%}")
-        
-        lines.append("")
-        
-        # Class distribution
-        class_counts = {}
-        for r in results:
-            if 'predicted_label' in r:
-                label = r['predicted_label']
-                class_counts[label] = class_counts.get(label, 0) + 1
-        
-        lines.append("Predicted Class Distribution:")
-        for label, count in sorted(class_counts.items(), key=lambda x: x[1], reverse=True):
-            lines.append(f"  {label}: {count} ({count/len(results)*100:.1f}%)")
-        
-        lines.append("\nDetailed Predictions:")
-        lines.append("-"*70)
-        
-        for r in results:
-            lines.append(f"\nImage: {r['image']}")
-            if 'error' in r:
-                lines.append(f"  ERROR: {r['error']}")
-            else:
-                lines.append(f"  Prediction: {r['predicted_label']} ({r['confidence']:.1%})")
-                if 'top_k_predictions' in r and len(r['top_k_predictions']) > 1:
-                    lines.append("  Top 5:")
-                    for i, pred in enumerate(r['top_k_predictions'][:5]):
-                        lines.append(f"    {i+1}. {pred['class_name']}: {pred['probability']:.1%}")
-                if 'inference_time_ms' in r:
-                    lines.append(f"  Inference time: {r['inference_time_ms']:.1f}ms")
-        
-        return '\n'.join(lines)
-    
-    else:  # json
-        return results
-
-
-def create_visualization(results: List[Dict[str, Any]], output_path: Path):
-    """Create visualization of predictions"""
-    import matplotlib.pyplot as plt
-    from collections import Counter
-    
-    # Extract predictions
-    predictions = [r['predicted_label'] for r in results if 'predicted_label' in r]
-    
-    if not predictions:
-        logger.warning("No predictions to visualize")
-        return
-    
-    # Count predictions
-    counter = Counter(predictions)
-    
-    # Create figure
-    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(15, 6))
-    
-    # Bar chart
-    labels, counts = zip(*counter.most_common())
-    x = range(len(labels))
-    
-    ax1.bar(x, counts)
-    ax1.set_xticks(x)
-    ax1.set_xticklabels(labels, rotation=45, ha='right')
-    ax1.set_xlabel('Predicted Class')
-    ax1.set_ylabel('Count')
-    ax1.set_title('Prediction Distribution')
-    ax1.grid(True, alpha=0.3)
-    
-    # Confidence distribution
-    confidences = [r['confidence'] for r in results if 'confidence' in r]
-    
-    ax2.hist(confidences, bins=20, edgecolor='black', alpha=0.7)
-    ax2.set_xlabel('Confidence')
-    ax2.set_ylabel('Count')
-    ax2.set_title('Confidence Distribution')
-    ax2.axvline(np.mean(confidences), color='red', linestyle='--', 
-                label=f'Mean: {np.mean(confidences):.3f}')
-    ax2.legend()
-    ax2.grid(True, alpha=0.3)
-    
-    plt.suptitle(f'RETFound Predictions - {len(results)} Images', fontsize=16)
-    plt.tight_layout()
-    
-    # Save
-    vis_path = output_path.parent / f"{output_path.stem}_visualization.png"
-    plt.savefig(vis_path, dpi=300, bbox_inches='tight')
-    plt.close()
-    
-    logger.info(f"Visualization saved to {vis_path}")
-
-
-def run_predict(args) -> int:
-    """Main prediction function"""
+    # Create predictor
     try:
-        # Setup logging
-        setup_logging()
-        
-        # Initialize predictor
-        config = None
-        if args.config:
-            config = RETFoundConfig.load(Path(args.config))
-        
         predictor = RETFoundPredictor(
-            checkpoint_path=args.checkpoint,
-            config=config,
-            device=args.device,
-            use_ema=args.use_ema
+            model_path=args.model,
+            metadata_path=args.metadata,
+            device=device,
+            batch_size=args.batch_size
         )
         
-        # Enable TTA if requested
-        if args.use_tta:
-            predictor.enable_tta(args.tta_augmentations)
-        
-        # Process input
-        input_path = Path(args.input)
-        
-        if not input_path.exists():
-            raise FileNotFoundError(f"Input not found: {input_path}")
-        
-        # Collect images to process
-        image_paths = []
-        
-        if input_path.is_file():
-            if input_path.suffix.lower() == '.csv':
-                # CSV with image paths
-                image_paths = load_image_list_from_csv(input_path)
-            elif input_path.suffix.lower() in args.extensions:
-                # Single image
-                image_paths = [input_path]
-            else:
-                raise ValueError(f"Unknown file type: {input_path.suffix}")
-        
-        elif input_path.is_dir():
-            # Directory of images
-            image_paths = find_images(input_path, args.extensions, args.recursive)
-            logger.info(f"Found {len(image_paths)} images in {input_path}")
-        
-        else:
-            raise ValueError(f"Invalid input: {input_path}")
-        
-        if not image_paths:
-            logger.error("No images found to process")
-            return 1
-        
-        # Make predictions
-        logger.info(f"Processing {len(image_paths)} images...")
-        
-        if len(image_paths) == 1:
-            # Single image - detailed prediction
-            results = [predictor.predict_single(image_paths[0], top_k=args.top_k)]
-            results[0]['all_probabilities'] = None  # Add if needed
-        else:
-            # Batch prediction
-            results = predictor.predict_batch(
-                image_paths, 
-                batch_size=args.batch_size,
-                show_progress=True
-            )
-            
-            # Add top-k predictions if requested
-            if args.top_k > 1 or args.include_probabilities:
-                logger.info("Adding detailed predictions...")
-                for i, result in enumerate(results):
-                    if 'error' not in result:
-                        detailed = predictor.predict_single(
-                            result['image'], 
-                            top_k=args.top_k
-                        )
-                        result.update(detailed)
-        
-        # Determine output format
-        if args.format == 'auto':
-            if args.output and args.output.endswith('.csv'):
-                output_format = 'csv'
-            elif args.output and args.output.endswith('.json'):
-                output_format = 'json'
-            elif len(results) == 1:
-                output_format = 'detailed'
-            else:
-                output_format = 'json'
-        else:
-            output_format = args.format
-        
-        # Format results
-        formatted = format_results(
-            results, 
-            output_format,
-            include_probabilities=args.include_probabilities,
-            threshold=args.threshold
-        )
-        
-        # Save or print results
-        if args.output:
-            output_path = Path(args.output)
-            
-            if output_format == 'csv':
-                formatted.to_csv(output_path, index=False)
-                logger.info(f"Results saved to {output_path}")
-            elif output_format == 'detailed':
-                with open(output_path, 'w') as f:
-                    f.write(formatted)
-                logger.info(f"Results saved to {output_path}")
-            else:  # json
-                with open(output_path, 'w') as f:
-                    json.dump(formatted, f, indent=2)
-                logger.info(f"Results saved to {output_path}")
-            
-            # Create visualization if requested
-            if args.visualize and len(results) > 1:
-                create_visualization(results, output_path)
-        
-        else:
-            # Print to console
-            if output_format == 'csv':
-                print(formatted.to_string(index=False))
-            elif output_format == 'detailed':
-                print(formatted)
-            else:
-                print(json.dumps(formatted, indent=2))
-        
-        # Summary statistics
-        if len(results) > 1:
-            logger.info("\n" + "="*50)
-            logger.info("SUMMARY")
-            logger.info("="*50)
-            
-            success_results = [r for r in results if 'error' not in r]
-            error_results = [r for r in results if 'error' in r]
-            
-            logger.info(f"Total images: {len(results)}")
-            logger.info(f"Successful: {len(success_results)}")
-            logger.info(f"Errors: {len(error_results)}")
-            
-            if success_results:
-                confidences = [r['confidence'] for r in success_results]
-                logger.info(f"Mean confidence: {np.mean(confidences):.3f}")
-                logger.info(f"Min confidence: {np.min(confidences):.3f}")
-                logger.info(f"Max confidence: {np.max(confidences):.3f}")
-                
-                if args.threshold:
-                    above_threshold = sum(1 for c in confidences if c >= args.threshold)
-                    logger.info(f"Above threshold ({args.threshold:.2%}): {above_threshold} "
-                              f"({above_threshold/len(confidences)*100:.1f}%)")
-        
-        return 0
+        if not args.quiet:
+            logger.info(f"Loaded model: {args.model}")
+            logger.info(f"Dataset version: {predictor.dataset_version}")
+            logger.info(f"Number of classes: {predictor.num_classes}")
         
     except Exception as e:
-        logger.error(f"Prediction failed with error: {e}")
-        logger.exception("Full traceback:")
-        return 1
+        logger.error(f"Failed to load model: {str(e)}")
+        raise
+    
+    # Run predictions
+    try:
+        results = predictor.predict_batch(
+            image_paths=image_paths,
+            save_results=False  # We'll handle saving ourselves
+        )
+        
+        # Filter by threshold if specified
+        if args.threshold > 0:
+            results = _filter_by_threshold(results, args.threshold)
+        
+        # Display results
+        if not args.quiet:
+            _display_results(results, args)
+        
+        # Check for critical conditions
+        if args.check_critical and predictor.dataset_version == 'v6.1':
+            critical_summary = _analyze_critical_conditions(results)
+            if not args.quiet and critical_summary['total_critical'] > 0:
+                _display_critical_summary(critical_summary)
+        
+        # Save results
+        if args.output:
+            _save_results(results, args)
+        
+        # Generate clinical report if requested
+        if args.clinical_report:
+            _generate_clinical_report(results, predictor, args)
+        
+        return results
+        
+    except Exception as e:
+        logger.error(f"Prediction failed: {str(e)}")
+        raise
+
+
+def _get_input_images(input_path: str) -> List[Path]:
+    """Get list of image paths from input."""
+    input_path = Path(input_path)
+    
+    if input_path.is_file():
+        # Single image
+        if input_path.suffix.lower() in ['.jpg', '.jpeg', '.png', '.tiff', '.bmp']:
+            return [input_path]
+        
+        # CSV file with image paths
+        elif input_path.suffix.lower() == '.csv':
+            df = pd.read_csv(input_path)
+            # Look for image path column
+            path_columns = ['path', 'image_path', 'filepath', 'filename', 'image']
+            for col in path_columns:
+                if col in df.columns:
+                    return [Path(p) for p in df[col].tolist()]
+            
+            # If no path column found, assume first column
+            return [Path(p) for p in df.iloc[:, 0].tolist()]
+        
+        else:
+            raise ValueError(f"Unsupported file type: {input_path.suffix}")
+    
+    elif input_path.is_dir():
+        # Directory of images
+        image_extensions = ['.jpg', '.jpeg', '.png', '.tiff', '.bmp']
+        image_paths = []
+        
+        for ext in image_extensions:
+            image_paths.extend(input_path.glob(f'*{ext}'))
+            image_paths.extend(input_path.glob(f'*{ext.upper()}'))
+        
+        return sorted(image_paths)
+    
+    else:
+        raise ValueError(f"Input path does not exist: {input_path}")
+
+
+def _filter_by_threshold(results: List[Dict], threshold: float) -> List[Dict]:
+    """Filter results by confidence threshold."""
+    filtered = []
+    
+    for result in results:
+        if result['confidence'] >= threshold:
+            filtered.append(result)
+        else:
+            # Still include but mark as below threshold
+            result['below_threshold'] = True
+            filtered.append(result)
+    
+    return filtered
+
+
+def _display_results(results: List[Dict], args: argparse.Namespace):
+    """Display prediction results."""
+    print("\n" + "=" * 80)
+    print("PREDICTION RESULTS")
+    print("=" * 80)
+    
+    for i, result in enumerate(results):
+        # Get image name
+        image_name = result['metadata'].get('filename', f'Image {i+1}')
+        
+        print(f"\n{image_name}:")
+        print("-" * 40)
+        
+        # Main prediction
+        if result.get('below_threshold', False):
+            print(f"  Prediction: {result['predicted_class']} "
+                  f"(confidence: {result['confidence']:.1%}) ⚠️ Below threshold")
+        else:
+            print(f"  Prediction: {result['predicted_class']} "
+                  f"(confidence: {result['confidence']:.1%})")
+        
+        # Show modality for v6.1
+        if 'modality' in result:
+            print(f"  Modality: {result['modality'].upper()}")
+        
+        # Top-k predictions if verbose
+        if args.verbose and 'top5_predictions' in result:
+            print(f"\n  Top {args.top_k} predictions:")
+            for j, pred in enumerate(result['top5_predictions'][:args.top_k], 1):
+                print(f"    {j}. {pred['class']}: {pred['probability']:.1%}")
+        
+        # Critical conditions
+        if 'critical_analysis' in result:
+            analysis = result['critical_analysis']
+            if analysis['is_critical']:
+                print("\n  ⚠️ CRITICAL CONDITION DETECTED!")
+                for cond in analysis['critical_conditions_detected']:
+                    print(f"    - {cond['condition']} (severity: {cond['severity']})")
+                print(f"    Recommendation: {analysis['recommendation']}")
+
+
+def _analyze_critical_conditions(results: List[Dict]) -> Dict:
+    """Analyze results for critical conditions."""
+    summary = {
+        'total_images': len(results),
+        'total_critical': 0,
+        'critical_conditions': {},
+        'critical_images': []
+    }
+    
+    for result in results:
+        if 'critical_analysis' in result and result['critical_analysis']['is_critical']:
+            summary['total_critical'] += 1
+            summary['critical_images'].append(result['metadata'].get('filename', 'Unknown'))
+            
+            # Count by condition
+            for cond in result['critical_analysis']['critical_conditions_detected']:
+                condition_name = cond['condition']
+                if condition_name not in summary['critical_conditions']:
+                    summary['critical_conditions'][condition_name] = 0
+                summary['critical_conditions'][condition_name] += 1
+    
+    return summary
+
+
+def _display_critical_summary(summary: Dict):
+    """Display critical conditions summary."""
+    print("\n" + "=" * 80)
+    print("CRITICAL CONDITIONS SUMMARY")
+    print("=" * 80)
+    
+    print(f"\nTotal images analyzed: {summary['total_images']}")
+    print(f"Images with critical conditions: {summary['total_critical']} "
+          f"({summary['total_critical']/summary['total_images']*100:.1f}%)")
+    
+    if summary['critical_conditions']:
+        print("\nBreakdown by condition:")
+        for condition, count in sorted(summary['critical_conditions'].items(), 
+                                     key=lambda x: x[1], reverse=True):
+            print(f"  - {condition}: {count}")
+    
+    print("\n⚠️  These cases require urgent ophthalmological evaluation!")
+
+
+def _save_results(results: List[Dict], args: argparse.Namespace):
+    """Save prediction results to file."""
+    output_path = Path(args.output)
+    
+    # Auto-detect format from extension
+    if args.output_format == 'auto':
+        if output_path.suffix.lower() == '.csv':
+            output_format = 'csv'
+        elif output_path.suffix.lower() == '.json':
+            output_format = 'json'
+        else:
+            output_format = 'csv'  # Default
+    else:
+        output_format = args.output_format
+    
+    if output_format == 'csv':
+        _save_results_csv(results, output_path, args)
+    else:
+        _save_results_json(results, output_path)
+    
+    logger.info(f"Results saved to {output_path}")
+
+
+def _save_results_csv(results: List[Dict], output_path: Path, args: argparse.Namespace):
+    """Save results as CSV."""
+    rows = []
+    
+    for result in results:
+        row = {
+            'image_path': result['metadata'].get('path', ''),
+            'filename': result['metadata'].get('filename', ''),
+            'predicted_class': result['predicted_class'],
+            'predicted_class_idx': result['predicted_class_idx'],
+            'confidence': result['confidence']
+        }
+        
+        # Add modality if present
+        if 'modality' in result:
+            row['modality'] = result['modality']
+        
+        # Add critical status
+        if 'critical_analysis' in result:
+            row['is_critical'] = result['critical_analysis']['is_critical']
+            if result['critical_analysis']['is_critical']:
+                row['critical_condition'] = result['critical_analysis']['critical_conditions_detected'][0]['condition']
+                row['recommendation'] = result['critical_analysis']['recommendation']
+        
+        # Add top-k predictions
+        if 'top5_predictions' in result:
+            for i, pred in enumerate(result['top5_predictions'][:args.top_k], 1):
+                row[f'top{i}_class'] = pred['class']
+                row[f'top{i}_probability'] = pred['probability']
+        
+        # Add all probabilities if requested
+        if args.save_probabilities and 'probabilities' in result:
+            for class_name, prob in result['probabilities'].items():
+                row[f'prob_{class_name}'] = prob
+        
+        rows.append(row)
+    
+    df = pd.DataFrame(rows)
+    df.to_csv(output_path, index=False)
+
+
+def _save_results_json(results: List[Dict], output_path: Path):
+    """Save results as JSON."""
+    with open(output_path, 'w') as f:
+        json.dump(results, f, indent=2)
+
+
+def _generate_clinical_report(results: List[Dict], predictor: RETFoundPredictor, args: argparse.Namespace):
+    """Generate clinical-style report for predictions."""
+    report_path = Path(args.output).parent / "clinical_prediction_report.md" if args.output else Path("clinical_prediction_report.md")
+    
+    with open(report_path, 'w') as f:
+        # Header
+        f.write("# Clinical Prediction Report - RETFound\n\n")
+        f.write(f"**Model**: {Path(args.model).name}\n")
+        f.write(f"**Dataset Version**: {predictor.dataset_version}\n")
+        f.write(f"**Date**: {torch.datetime.datetime.now()}\n")
+        f.write(f"**Total Images**: {len(results)}\n")
+        f.write("\n---\n\n")
+        
+        # Summary
+        f.write("## Summary\n\n")
+        
+        # Count by predicted class
+        class_counts = {}
+        modality_counts = {'fundus': 0, 'oct': 0}
+        critical_count = 0
+        
+        for result in results:
+            # Class counts
+            pred_class = result['predicted_class']
+            class_counts[pred_class] = class_counts.get(pred_class, 0) + 1
+            
+            # Modality counts
+            if 'modality' in result:
+                modality_counts[result['modality']] += 1
+            
+            # Critical conditions
+            if result.get('critical_analysis', {}).get('is_critical', False):
+                critical_count += 1
+        
+        # Write summary statistics
+        f.write(f"- **Normal cases**: {class_counts.get('Normal_Fundus', 0) + class_counts.get('Normal_OCT', 0)}\n")
+        f.write(f"- **Pathological cases**: {len(results) - class_counts.get('Normal_Fundus', 0) - class_counts.get('Normal_OCT', 0)}\n")
+        f.write(f"- **Critical conditions**: {critical_count}\n")
+        
+        if predictor.dataset_version == 'v6.1':
+            f.write(f"\n**By Modality**:\n")
+            f.write(f"- Fundus images: {modality_counts['fundus']}\n")
+            f.write(f"- OCT images: {modality_counts['oct']}\n")
+        
+        # Distribution of conditions
+        f.write("\n## Distribution of Detected Conditions\n\n")
+        
+        sorted_classes = sorted(class_counts.items(), key=lambda x: x[1], reverse=True)
+        
+        f.write("| Condition | Count | Percentage |\n")
+        f.write("|-----------|-------|------------|\n")
+        
+        for class_name, count in sorted_classes:
+            percentage = count / len(results) * 100
+            f.write(f"| {class_name} | {count} | {percentage:.1f}% |\n")
+        
+        # Critical conditions detail
+        if critical_count > 0:
+            f.write("\n## Critical Conditions Requiring Urgent Attention\n\n")
+            
+            critical_by_type = {}
+            for result in results:
+                if result.get('critical_analysis', {}).get('is_critical', False):
+                    for cond in result['critical_analysis']['critical_conditions_detected']:
+                        condition_name = cond['condition']
+                        if condition_name not in critical_by_type:
+                            critical_by_type[condition_name] = []
+                        critical_by_type[condition_name].append({
+                            'filename': result['metadata'].get('filename', 'Unknown'),
+                            'confidence': result['confidence'],
+                            'severity': cond['severity'],
+                            'urgency': cond['urgency']
+                        })
+            
+            for condition, cases in critical_by_type.items():
+                f.write(f"### {condition} ({len(cases)} cases)\n\n")
+                f.write(f"**Severity**: {cases[0]['severity']}\n")
+                f.write(f"**Clinical urgency**: {cases[0]['urgency']}\n\n")
+                
+                f.write("Affected images:\n")
+                for case in cases[:10]:  # Show max 10
+                    f.write(f"- {case['filename']} (confidence: {case['confidence']:.1%})\n")
+                
+                if len(cases) > 10:
+                    f.write(f"- ... and {len(cases) - 10} more\n")
+                f.write("\n")
+        
+        # Recommendations
+        f.write("## Clinical Recommendations\n\n")
+        
+        if critical_count > 0:
+            f.write(f"⚠️ **{critical_count} images show critical conditions requiring urgent evaluation.**\n\n")
+            f.write("Recommended actions:\n")
+            f.write("1. Prioritize review of critical cases\n")
+            f.write("2. Schedule urgent ophthalmological consultations\n")
+            f.write("3. Consider immediate referral for sight-threatening conditions\n\n")
+        
+        f.write("General recommendations:\n")
+        f.write("- All predictions should be reviewed by qualified ophthalmologists\n")
+        f.write("- Consider patient history and clinical context\n")
+        f.write("- Use predictions as screening aids, not definitive diagnoses\n")
+        
+        # Detailed results (optional)
+        if args.verbose:
+            f.write("\n## Detailed Results\n\n")
+            
+            for result in results[:50]:  # Limit to first 50
+                f.write(f"### {result['metadata'].get('filename', 'Unknown')}\n\n")
+                f.write(f"- **Prediction**: {result['predicted_class']}\n")
+                f.write(f"- **Confidence**: {result['confidence']:.1%}\n")
+                
+                if 'modality' in result:
+                    f.write(f"- **Modality**: {result['modality']}\n")
+                
+                if result.get('critical_analysis', {}).get('is_critical', False):
+                    f.write(f"- **Critical**: YES - {result['critical_analysis']['recommendation']}\n")
+                
+                f.write("\n")
+        
+        # Footer
+        f.write("\n---\n\n")
+        f.write("*This report is generated by an AI model and should not be used as the sole basis for clinical decisions.*\n")
+    
+    logger.info(f"Clinical report saved to {report_path}")

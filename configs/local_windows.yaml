@@ -1,0 +1,109 @@
+# Configuration for Local Windows Development
+# Optimized for training on local GPU with Windows paths
+
+# Inherit from dataset v6.1 configuration
+defaults:
+  - dataset_v6.1
+
+# Windows specific paths
+dataset_path: "D:\\DATASET_CLASSIFICATION"
+output_path: "D:\\retfound_training\\outputs\\v6.1"
+checkpoint_path: "D:\\retfound_training\\checkpoints\\v6.1"
+cache_dir: "D:\\caasi_cache\\v6.1"
+
+# RETFound weights - Windows paths
+weights_paths:
+  cfp: "D:\\retfound_training\\weights\\RETFound_mae_natureCFP.pth"
+  oct: "D:\\retfound_training\\weights\\RETFound_mae_natureOCT.pth"
+  meh: "D:\\retfound_training\\weights\\RETFound_mae_meh.pth"
+
+# Training adjustments for local GPU
+training:
+  # Adjust based on your GPU
+  # For RTX 3090/4090 (24GB):
+  batch_size: 8
+  gradient_accumulation: 8  # Effective batch size = 64
+  
+  # For RTX 3080/3070 (10-12GB):
+  # batch_size: 4
+  # gradient_accumulation: 16
+  
+  # Fewer epochs for testing
+  epochs: 10  # Change to 100 for full training
+  
+  # More frequent checkpointing for testing
+  save_frequency: 1
+
+# Optimizer - might need lower LR on consumer GPUs
+optimizer:
+  base_lr: 3e-5  # Slightly lower for stability
+
+# Windows specific optimizations
+optimizations:
+  # Mixed precision - use float16 on consumer GPUs
+  amp_dtype: "float16"  # bfloat16 not supported on most consumer GPUs
+  
+  # Compile might not work well on Windows
+  use_compile: false
+  
+  # Gradient checkpointing essential for smaller GPUs
+  use_gradient_checkpointing: true
+
+# Data loading - Windows specific
+dataloader:
+  num_workers: 0  # Windows multiprocessing can be problematic
+  persistent_workers: false  # Disable for Windows
+  prefetch_factor: 2
+
+# Logging
+logging:
+  # Local paths for logs
+  log_dir: "D:\\retfound_training\\logs"
+  
+  # Maybe disable W&B for local testing
+  use_wandb: false
+  use_tensorboard: true
+  tensorboard_dir: "D:\\retfound_training\\runs"
+
+# Memory optimization for smaller GPUs
+memory_optimization:
+  # Clear cache more frequently
+  clear_cache_interval: 100  # Clear GPU cache every 100 batches
+  
+  # Reduce validation batch size
+  val_batch_size_multiplier: 1  # Same as training (not 2x)
+
+# Quick test configuration
+quick_test:
+  enabled: false  # Set to true for quick testing
+  subset_size: 1000  # Use only 1000 images per split
+  epochs: 3
+  save_frequency: 1
+
+# Windows specific environment variables
+env_vars:
+  # Disable some warnings
+  CUDA_LAUNCH_BLOCKING: "0"
+  # Path for torch hub cache
+  TORCH_HOME: "D:\\torch_cache"
+
+# Development/debugging options
+debug:
+  # Enable for troubleshooting
+  verbose: true
+  
+  # Save sample augmented images
+  save_augmented_samples: true
+  augmented_samples_dir: "D:\\retfound_training\\samples"
+  
+  # Profile performance
+  profile: false
+  profile_dir: "D:\\retfound_training\\profiling"
+
+# Notes
+notes: |
+  - Configuration optimized for Windows local development
+  - num_workers set to 0 to avoid multiprocessing issues
+  - Paths use Windows format (backslashes)
+  - Adjust batch_size based on your GPU memory
+  - Use quick_test.enabled: true for rapid testing

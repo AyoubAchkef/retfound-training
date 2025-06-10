@@ -1,9 +1,9 @@
-"""RETFound Vision Transformer implementation."""
+"""RETFound Vision Transformer implementation for Dataset v6.1."""
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from typing import Optional, Dict, Any, Tuple
+from typing import Optional, Dict, Any, Tuple, List, Union
 from collections import OrderedDict
 from functools import partial
 import logging
@@ -14,6 +14,7 @@ from timm.models.vision_transformer import PatchEmbed
 from retfound.models.base import BaseModel
 from retfound.models.layers import Attention, Block
 from retfound.core.exceptions import ModelError
+from retfound.core.constants import NUM_TOTAL_CLASSES, UNIFIED_CLASS_NAMES
 
 logger = logging.getLogger(__name__)
 
@@ -22,6 +23,7 @@ class RETFoundModel(BaseModel):
     """RETFound Vision Transformer for medical image classification.
     
     Based on the MAE architecture pre-trained on 1.6M retinal images.
+    Updated for Dataset v6.1 with 28 classes (18 Fundus + 10 OCT).
     """
     
     def __init__(self, config: Any):
@@ -44,11 +46,15 @@ class RETFoundModel(BaseModel):
             self.drop_rate = config.model.drop_rate
             self.drop_path_rate = config.model.drop_path_rate
             self.use_gradient_checkpointing = config.optimization.use_gradient_checkpointing
+            
+            # Dataset v6.1 specific
+            self.modality = getattr(config.data, 'modality', 'both')
+            self.unified_classes = getattr(config.data, 'unified_classes', True)
         else:
             # Direct config
             self.img_size = getattr(config, 'img_size', 224)
             self.patch_size = getattr(config, 'patch_size', 16)
-            self.num_classes = getattr(config, 'num_classes', 1000)
+            self.num_classes = getattr(config, 'num_classes', NUM_TOTAL_CLASSES)  # Default to 28
             self.embed_dim = getattr(config, 'embed_dim', 1024)
             self.depth = getattr(config, 'depth', 24)
             self.num_heads = getattr(config, 'num_heads', 16)
@@ -56,6 +62,16 @@ class RETFoundModel(BaseModel):
             self.drop_rate = getattr(config, 'drop_rate', 0.0)
             self.drop_path_rate = getattr(config, 'drop_path_rate', 0.2)
             self.use_gradient_checkpointing = getattr(config, 'use_gradient_checkpointing', False)
+            self.modality = getattr(config, 'modality', 'both')
+            self.unified_classes = getattr(config, 'unified_classes', True)
+        
+        # Validate num_classes for dataset v6.1
+        if self.unified_classes and self.num_classes != NUM_TOTAL_CLASSES:
+            logger.warning(
+                f"num_classes={self.num_classes} but unified_classes=True. "
+                f"Setting num_classes to {NUM_TOTAL_CLASSES} for dataset v6.1"
+            )
+            self.num_classes = NUM_TOTAL_CLASSES
         
         # Build model
         self.build()
@@ -96,13 +112,27 @@ class RETFoundModel(BaseModel):
         
         # Final normalization and head
         self.norm = nn.LayerNorm(self.embed_dim, eps=1e-6)
-        self.head = nn.Linear(self.embed_dim, self.num_classes)
+        
+        # Classification head(s) - support for multi-head if needed
+        if self.unified_classes:
+            # Single head for unified 28 classes
+            self.head = nn.Linear(self.embed_dim, self.num_classes)
+        else:
+            # Separate heads for fundus and OCT if not unified
+            if self.modality == 'both':
+                self.head_fundus = nn.Linear(self.embed_dim, 18)
+                self.head_oct = nn.Linear(self.embed_dim, 10)
+                self.modality_classifier = nn.Linear(self.embed_dim, 2)
+            elif self.modality == 'fundus':
+                self.head = nn.Linear(self.embed_dim, 18)
+            else:  # oct
+                self.head = nn.Linear(self.embed_dim, 10)
         
         # Initialize weights
         self.initialize_weights()
         
         self._is_built = True
-        logger.info(f"Built RETFound model: {self.summary()}")
+        logger.info(f"Built RETFound model for dataset v6.1: {self.summary()}")
     
     def initialize_weights(self) -> None:
         """Initialize model weights following MAE/ViT conventions."""
@@ -217,17 +247,25 @@ class RETFoundModel(BaseModel):
         if msg.unexpected_keys:
             logger.warning(f"Unexpected keys: {len(msg.unexpected_keys)}")
         
-        # Initialize classification head
+        # Initialize classification head(s)
         if hasattr(self, 'head'):
             nn.init.trunc_normal_(self.head.weight, std=0.02)
             if self.head.bias is not None:
                 nn.init.zeros_(self.head.bias)
-            logger.info("Classification head initialized")
+            logger.info(f"Classification head initialized for {self.num_classes} classes")
+        
+        if hasattr(self, 'head_fundus'):
+            nn.init.trunc_normal_(self.head_fundus.weight, std=0.02)
+            nn.init.trunc_normal_(self.head_oct.weight, std=0.02)
+            nn.init.trunc_normal_(self.modality_classifier.weight, std=0.02)
+            logger.info("Multi-head classification initialized for separate modalities")
         
         return {
             'loaded_keys': list(loaded_keys),
             'missing_keys': msg.missing_keys,
-            'unexpected_keys': msg.unexpected_keys
+            'unexpected_keys': msg.unexpected_keys,
+            'model_key': model_key,
+            'num_classes': self.num_classes
         }
     
     def _interpolate_pos_embed(
@@ -304,25 +342,63 @@ class RETFoundModel(BaseModel):
         # Return cls token
         return x[:, 0]
     
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
+    def forward(
+        self, 
+        x: torch.Tensor, 
+        return_features: bool = False,
+        modality: Optional[str] = None
+    ) -> Union[torch.Tensor, Tuple[torch.Tensor, torch.Tensor]]:
         """Forward pass of the model.
         
         Args:
             x: Input tensor [B, C, H, W]
+            return_features: Whether to return features along with logits
+            modality: Modality hint for multi-head models ('fundus' or 'oct')
             
         Returns:
-            Logits tensor [B, num_classes]
+            Logits tensor [B, num_classes] or tuple of (logits, features)
         """
-        x = self.forward_features(x)
-        x = self.head(x)
-        return x
+        features = self.forward_features(x)
+        
+        # Classification based on configuration
+        if self.unified_classes or hasattr(self, 'head'):
+            # Single unified head
+            logits = self.head(features)
+        else:
+            # Multi-head for separate modalities
+            if modality == 'fundus':
+                logits = self.head_fundus(features)
+            elif modality == 'oct':
+                logits = self.head_oct(features)
+            else:
+                # Need to determine modality
+                modality_logits = self.modality_classifier(features)
+                modality_probs = F.softmax(modality_logits, dim=1)
+                
+                # Use predicted modality
+                fundus_logits = self.head_fundus(features)
+                oct_logits = self.head_oct(features)
+                
+                # Weighted combination based on modality prediction
+                fundus_weight = modality_probs[:, 0:1]
+                oct_weight = modality_probs[:, 1:2]
+                
+                # Pad to same size and combine
+                fundus_padded = F.pad(fundus_logits, (0, 10))  # Pad to 28
+                oct_padded = F.pad(oct_logits, (18, 0))  # Pad to 28
+                
+                logits = fundus_weight * fundus_padded + oct_weight * oct_padded
+        
+        if return_features:
+            return logits, features
+        return logits
     
     def get_optimizer_params(
         self,
         base_lr: float,
         weight_decay: float = 0.05,
         layer_decay: Optional[float] = 0.65
-    ) -> list[dict]:
+    ) -> List[Dict[str, Any]]:
         """Get parameter groups with layer-wise learning rate decay.
         
         Args:
@@ -355,6 +431,9 @@ class RETFoundModel(BaseModel):
         # Final layers
         layer_indices['norm'] = num_layers
         layer_indices['head'] = num_layers + 1
+        layer_indices['head_fundus'] = num_layers + 1
+        layer_indices['head_oct'] = num_layers + 1
+        layer_indices['modality_classifier'] = num_layers + 1
         
         # Group parameters
         for name, param in self.named_parameters():
@@ -369,8 +448,8 @@ class RETFoundModel(BaseModel):
                     break
             
             # Calculate learning rate scale
-            if 'head' in name:
-                # Classification head gets full learning rate
+            if any(head in name for head in ['head', 'classifier']):
+                # Classification heads get full learning rate
                 lr_scale = 1.0
             else:
                 lr_scale = layer_decay ** (num_layers - layer_id)
@@ -393,6 +472,9 @@ class RETFoundModel(BaseModel):
                 'layer_id': layer_id
             })
         
+        # Log parameter groups info
+        logger.info(f"Created {len(param_groups)} parameter groups with layer-wise LR decay")
+        
         return param_groups
     
     def enable_gradient_checkpointing(self) -> None:
@@ -405,7 +487,7 @@ class RETFoundModel(BaseModel):
         self.use_gradient_checkpointing = False
         logger.info("Gradient checkpointing disabled")
     
-    def get_layer_groups(self, num_groups: int = 4) -> list[list[nn.Module]]:
+    def get_layer_groups(self, num_groups: int = 4) -> List[List[nn.Module]]:
         """Get layer groups for differential learning rates.
         
         Args:
@@ -430,8 +512,51 @@ class RETFoundModel(BaseModel):
                 end_idx = start_idx + blocks_per_group
                 block_groups.append(self.blocks[start_idx:end_idx])
         
-        # Last group: Head
-        final_group = [self.norm, self.head]
+        # Last group: Head(s)
+        final_group = [self.norm]
+        if hasattr(self, 'head'):
+            final_group.append(self.head)
+        if hasattr(self, 'head_fundus'):
+            final_group.extend([self.head_fundus, self.head_oct, self.modality_classifier])
         
         groups = [group0] + block_groups + [final_group]
         return groups
+    
+    def get_class_names(self) -> List[str]:
+        """Get class names for the model.
+        
+        Returns:
+            List of class names
+        """
+        if self.unified_classes:
+            return UNIFIED_CLASS_NAMES
+        else:
+            # Return appropriate class names based on modality
+            if self.modality == 'fundus':
+                from retfound.core.constants import FUNDUS_CLASS_NAMES
+                return FUNDUS_CLASS_NAMES
+            elif self.modality == 'oct':
+                from retfound.core.constants import OCT_CLASS_NAMES
+                return OCT_CLASS_NAMES
+            else:
+                # Combined
+                return UNIFIED_CLASS_NAMES
+    
+    def summary(self) -> str:
+        """Get model summary.
+        
+        Returns:
+            Model summary string
+        """
+        total_params = sum(p.numel() for p in self.parameters())
+        trainable_params = sum(p.numel() for p in self.parameters() if p.requires_grad)
+        
+        summary = f"RETFoundModel(\n"
+        summary += f"  img_size={self.img_size}, patch_size={self.patch_size}\n"
+        summary += f"  embed_dim={self.embed_dim}, depth={self.depth}, num_heads={self.num_heads}\n"
+        summary += f"  num_classes={self.num_classes}, modality={self.modality}\n"
+        summary += f"  unified_classes={self.unified_classes}\n"
+        summary += f"  total_params={total_params:,}, trainable_params={trainable_params:,}\n"
+        summary += f")"
+        
+        return summary

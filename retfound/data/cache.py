@@ -1,9 +1,10 @@
 """
-Caching System for RETFound
-==========================
+Caching System for RETFound - Enhanced for Dataset v6.1
+=======================================================
 
 Implements efficient caching mechanisms for datasets and images
-to speed up data loading during training.
+to speed up data loading during training, with specific optimizations
+for the CAASI dataset v6.1 structure.
 """
 
 import os
@@ -13,13 +14,15 @@ import pickle
 import json
 import logging
 from pathlib import Path
-from typing import Optional, Dict, Any, Union, List
+from typing import Optional, Dict, Any, Union, List, Tuple
 from datetime import datetime, timedelta
 import threading
 from functools import lru_cache
+from collections import defaultdict
 
 import numpy as np
 from PIL import Image
+import torch
 
 logger = logging.getLogger(__name__)
 
@@ -72,7 +75,8 @@ class CacheManager:
         return {
             'entries': {},
             'total_size': 0,
-            'created_at': datetime.now().isoformat()
+            'created_at': datetime.now().isoformat(),
+            'version': 'v6.1'  # Track dataset version
         }
     
     def _save_metadata(self):
@@ -146,11 +150,19 @@ class CacheManager:
                 except Exception as e:
                     logger.error(f"Failed to remove {cache_file}: {e}")
             
+            # Also remove compressed files
+            for cache_file in self.cache_dir.glob('*.pkl.gz'):
+                try:
+                    cache_file.unlink()
+                except Exception as e:
+                    logger.error(f"Failed to remove {cache_file}: {e}")
+            
             # Reset metadata
             self.metadata = {
                 'entries': {},
                 'total_size': 0,
-                'created_at': datetime.now().isoformat()
+                'created_at': datetime.now().isoformat(),
+                'version': 'v6.1'
             }
             self._save_metadata()
         
@@ -164,7 +176,8 @@ class CacheManager:
             'max_size_gb': self.max_size_bytes / 1e9,
             'usage_percent': (self.metadata['total_size'] / self.max_size_bytes) * 100,
             'created_at': self.metadata['created_at'],
-            'cache_dir': str(self.cache_dir)
+            'cache_dir': str(self.cache_dir),
+            'version': self.metadata.get('version', 'unknown')
         }
 
 
@@ -177,6 +190,11 @@ class DatasetCache(CacheManager):
         
         # Additional dataset-specific caching
         self.dataset_info_cache = {}
+        
+        # V6.1 specific caches
+        self.modality_stats_cache = {}  # Stats per modality
+        self.class_distribution_cache = {}  # Class distribution cache
+        self.unified_class_names_cache = None  # 28 unified classes
     
     def cache_dataset_info(
         self,
@@ -203,7 +221,8 @@ class DatasetCache(CacheManager):
                     'filename': cache_file.name,
                     'size': cache_file.stat().st_size,
                     'created_at': datetime.now().isoformat(),
-                    'type': 'dataset_info'
+                    'type': 'dataset_info',
+                    'dataset_version': info.get('version', 'unknown')
                 }
                 self.metadata['total_size'] += cache_file.stat().st_size
                 self._save_metadata()
@@ -278,10 +297,205 @@ class DatasetCache(CacheManager):
                 logger.error(f"Failed to load cached splits: {e}")
         
         return None
+    
+    # V6.1 specific methods
+    def cache_v61_metadata(
+        self,
+        metadata: Dict[str, Any]
+    ):
+        """Cache dataset v6.1 specific metadata"""
+        key = "v61_metadata"
+        cache_file = self.cache_dir / f"{key}.json"
+        
+        with self.lock:
+            try:
+                # Ensure metadata includes v6.1 specifics
+                metadata['dataset_version'] = 'v6.1'
+                metadata['num_classes'] = 28
+                metadata['modalities'] = ['fundus', 'oct']
+                metadata['cached_at'] = datetime.now().isoformat()
+                
+                with open(cache_file, 'w') as f:
+                    json.dump(metadata, f, indent=2)
+                
+                # Update cache metadata
+                self.metadata['entries'][key] = {
+                    'filename': cache_file.name,
+                    'size': cache_file.stat().st_size,
+                    'created_at': datetime.now().isoformat(),
+                    'type': 'v61_metadata'
+                }
+                self.metadata['total_size'] += cache_file.stat().st_size
+                self._save_metadata()
+                
+                logger.info("Cached v6.1 metadata successfully")
+                
+            except Exception as e:
+                logger.error(f"Failed to cache v6.1 metadata: {e}")
+    
+    def get_v61_metadata(self) -> Optional[Dict[str, Any]]:
+        """Get cached v6.1 metadata"""
+        key = "v61_metadata"
+        cache_file = self.cache_dir / f"{key}.json"
+        
+        if cache_file.exists():
+            try:
+                with open(cache_file, 'r') as f:
+                    return json.load(f)
+            except Exception as e:
+                logger.error(f"Failed to load v6.1 metadata: {e}")
+        
+        return None
+    
+    def cache_modality_stats(
+        self,
+        modality: str,
+        stats: Dict[str, Any]
+    ):
+        """
+        Cache statistics for a specific modality (fundus/oct)
+        
+        Args:
+            modality: 'fundus' or 'oct'
+            stats: Statistics dictionary
+        """
+        key = f"modality_stats_{modality}"
+        cache_file = self.cache_dir / f"{key}.json"
+        
+        with self.lock:
+            try:
+                stats['modality'] = modality
+                stats['cached_at'] = datetime.now().isoformat()
+                
+                with open(cache_file, 'w') as f:
+                    json.dump(stats, f, indent=2)
+                
+                # Update in-memory cache
+                self.modality_stats_cache[modality] = stats
+                
+                # Update metadata
+                self.metadata['entries'][key] = {
+                    'filename': cache_file.name,
+                    'size': cache_file.stat().st_size,
+                    'created_at': datetime.now().isoformat(),
+                    'type': 'modality_stats'
+                }
+                self.metadata['total_size'] += cache_file.stat().st_size
+                self._save_metadata()
+                
+            except Exception as e:
+                logger.error(f"Failed to cache modality stats for {modality}: {e}")
+    
+    def get_modality_stats(self, modality: str) -> Optional[Dict[str, Any]]:
+        """Get cached modality statistics"""
+        # Check in-memory cache first
+        if modality in self.modality_stats_cache:
+            return self.modality_stats_cache[modality]
+        
+        # Check disk cache
+        key = f"modality_stats_{modality}"
+        cache_file = self.cache_dir / f"{key}.json"
+        
+        if cache_file.exists():
+            try:
+                with open(cache_file, 'r') as f:
+                    stats = json.load(f)
+                
+                # Update in-memory cache
+                self.modality_stats_cache[modality] = stats
+                return stats
+                
+            except Exception as e:
+                logger.error(f"Failed to load modality stats for {modality}: {e}")
+        
+        return None
+    
+    def cache_class_distribution(
+        self,
+        split: str,
+        distribution: Dict[str, int],
+        modality: Optional[str] = None
+    ):
+        """
+        Cache class distribution for a specific split
+        
+        Args:
+            split: 'train', 'val', or 'test'
+            distribution: Class distribution dictionary
+            modality: Optional modality filter
+        """
+        key = f"class_dist_{split}"
+        if modality:
+            key += f"_{modality}"
+        
+        cache_file = self.cache_dir / f"{key}.json"
+        
+        with self.lock:
+            try:
+                data = {
+                    'split': split,
+                    'modality': modality,
+                    'distribution': distribution,
+                    'total_samples': sum(distribution.values()),
+                    'cached_at': datetime.now().isoformat()
+                }
+                
+                with open(cache_file, 'w') as f:
+                    json.dump(data, f, indent=2)
+                
+                # Update in-memory cache
+                cache_key = f"{split}_{modality}" if modality else split
+                self.class_distribution_cache[cache_key] = data
+                
+                # Update metadata
+                self.metadata['entries'][key] = {
+                    'filename': cache_file.name,
+                    'size': cache_file.stat().st_size,
+                    'created_at': datetime.now().isoformat(),
+                    'type': 'class_distribution'
+                }
+                self.metadata['total_size'] += cache_file.stat().st_size
+                self._save_metadata()
+                
+            except Exception as e:
+                logger.error(f"Failed to cache class distribution: {e}")
+    
+    def get_class_distribution(
+        self,
+        split: str,
+        modality: Optional[str] = None
+    ) -> Optional[Dict[str, Any]]:
+        """Get cached class distribution"""
+        cache_key = f"{split}_{modality}" if modality else split
+        
+        # Check in-memory cache first
+        if cache_key in self.class_distribution_cache:
+            return self.class_distribution_cache[cache_key]
+        
+        # Check disk cache
+        key = f"class_dist_{split}"
+        if modality:
+            key += f"_{modality}"
+        
+        cache_file = self.cache_dir / f"{key}.json"
+        
+        if cache_file.exists():
+            try:
+                with open(cache_file, 'r') as f:
+                    data = json.load(f)
+                
+                # Update in-memory cache
+                self.class_distribution_cache[cache_key] = data
+                return data
+                
+            except Exception as e:
+                logger.error(f"Failed to load class distribution: {e}")
+        
+        return None
 
 
 class ImageCache(CacheManager):
-    """Cache manager for preprocessed images"""
+    """Cache manager for preprocessed images with v6.1 optimizations"""
     
     def __init__(
         self,
@@ -304,16 +518,43 @@ class ImageCache(CacheManager):
         self._memory_cache = {}
         self._memory_cache_size = 1000  # Number of images to keep in memory
         self._access_count = {}
+        
+        # V6.1 specific: Track modality in cache
+        self._modality_cache = {}  # image_key -> modality mapping
+        
+        # Stats tracking
+        self._cache_hits = defaultdict(int)
+        self._cache_misses = defaultdict(int)
     
     def _get_cache_key(self, image_path: Union[str, Path]) -> str:
         """Generate cache key for an image path"""
         image_path = str(image_path)
-        return hashlib.md5(image_path.encode()).hexdigest()
+        # Include image size in key for multi-resolution support
+        key_string = f"{image_path}_{self.image_size}"
+        return hashlib.md5(key_string.encode()).hexdigest()
+    
+    def _detect_modality(self, image_path: Union[str, Path]) -> str:
+        """Detect modality from image path (fundus or oct)"""
+        path_str = str(image_path).lower()
+        if 'fundus' in path_str:
+            return 'fundus'
+        elif 'oct' in path_str:
+            return 'oct'
+        else:
+            # Try to infer from parent directories
+            parts = Path(image_path).parts
+            for part in parts:
+                if 'fundus' in part.lower():
+                    return 'fundus'
+                elif 'oct' in part.lower():
+                    return 'oct'
+            return 'unknown'
     
     def cache_image(
         self,
         image_path: Union[str, Path],
-        image_array: np.ndarray
+        image_array: np.ndarray,
+        modality: Optional[str] = None
     ) -> bool:
         """
         Cache a preprocessed image
@@ -321,6 +562,7 @@ class ImageCache(CacheManager):
         Args:
             image_path: Original image path
             image_array: Preprocessed image array
+            modality: Optional modality hint ('fundus' or 'oct')
             
         Returns:
             Success status
@@ -328,14 +570,31 @@ class ImageCache(CacheManager):
         key = self._get_cache_key(image_path)
         cache_file = self.cache_dir / f"{key}.pkl"
         
+        # Detect modality if not provided
+        if modality is None:
+            modality = self._detect_modality(image_path)
+        
         with self.lock:
             try:
+                # Prepare cache data
+                cache_data = {
+                    'array': image_array,
+                    'modality': modality,
+                    'shape': image_array.shape,
+                    'dtype': str(image_array.dtype),
+                    'path': str(image_path),
+                    'cached_at': datetime.now().isoformat()
+                }
+                
                 # Save to disk
-                with open(cache_file, 'wb') as f:
-                    if self.enable_compression:
-                        import gzip
-                        f = gzip.open(cache_file.with_suffix('.pkl.gz'), 'wb')
-                    pickle.dump(image_array, f)
+                if self.enable_compression:
+                    import gzip
+                    cache_file = cache_file.with_suffix('.pkl.gz')
+                    with gzip.open(cache_file, 'wb') as f:
+                        pickle.dump(cache_data, f)
+                else:
+                    with open(cache_file, 'wb') as f:
+                        pickle.dump(cache_data, f)
                 
                 # Update metadata
                 file_size = cache_file.stat().st_size
@@ -345,9 +604,13 @@ class ImageCache(CacheManager):
                     'created_at': datetime.now().isoformat(),
                     'type': 'image',
                     'original_path': str(image_path),
-                    'shape': image_array.shape
+                    'shape': image_array.shape,
+                    'modality': modality
                 }
                 self.metadata['total_size'] += file_size
+                
+                # Track modality
+                self._modality_cache[key] = modality
                 
                 # Enforce size limit
                 self._enforce_size_limit()
@@ -365,7 +628,7 @@ class ImageCache(CacheManager):
     def get_image(
         self,
         image_path: Union[str, Path]
-    ) -> Optional[np.ndarray]:
+    ) -> Optional[Union[np.ndarray, Tuple[np.ndarray, str]]]:
         """
         Get cached image
         
@@ -376,10 +639,12 @@ class ImageCache(CacheManager):
             Cached image array or None
         """
         key = self._get_cache_key(image_path)
+        modality = self._detect_modality(image_path)
         
         # Check memory cache first
         if key in self._memory_cache:
             self._access_count[key] = self._access_count.get(key, 0) + 1
+            self._cache_hits[modality] += 1
             return self._memory_cache[key]
         
         # Check disk cache
@@ -389,15 +654,27 @@ class ImageCache(CacheManager):
         
         if cache_file.exists():
             try:
-                with open(cache_file, 'rb') as f:
-                    if self.enable_compression:
-                        import gzip
-                        f = gzip.open(cache_file, 'rb')
-                    image_array = pickle.load(f)
+                if self.enable_compression:
+                    import gzip
+                    with gzip.open(cache_file, 'rb') as f:
+                        cache_data = pickle.load(f)
+                else:
+                    with open(cache_file, 'rb') as f:
+                        cache_data = pickle.load(f)
+                
+                # Extract image array
+                if isinstance(cache_data, dict):
+                    image_array = cache_data['array']
+                    # Update modality cache
+                    self._modality_cache[key] = cache_data.get('modality', modality)
+                else:
+                    # Legacy format compatibility
+                    image_array = cache_data
                 
                 # Add to memory cache
                 self._add_to_memory_cache(key, image_array)
                 
+                self._cache_hits[modality] += 1
                 return image_array
                 
             except Exception as e:
@@ -405,6 +682,7 @@ class ImageCache(CacheManager):
                 # Remove corrupted cache entry
                 self._remove_entry(key)
         
+        self._cache_misses[modality] += 1
         return None
     
     def _add_to_memory_cache(self, key: str, image_array: np.ndarray):
@@ -420,14 +698,26 @@ class ImageCache(CacheManager):
         self._memory_cache[key] = image_array
         self._access_count[key] = 1
     
-    def preload_images(self, image_paths: List[Union[str, Path]]):
+    def preload_images(
+        self,
+        image_paths: List[Union[str, Path]],
+        show_progress: bool = True
+    ):
         """
         Preload multiple images into cache
         
         Args:
             image_paths: List of image paths to preload
+            show_progress: Whether to show progress bar
         """
         logger.info(f"Preloading {len(image_paths)} images into cache...")
+        
+        if show_progress:
+            try:
+                from tqdm import tqdm
+                image_paths = tqdm(image_paths, desc="Preloading images")
+            except ImportError:
+                pass
         
         loaded = 0
         for image_path in image_paths:
@@ -435,6 +725,31 @@ class ImageCache(CacheManager):
                 loaded += 1
         
         logger.info(f"Preloaded {loaded}/{len(image_paths)} images from cache")
+    
+    def get_cache_stats_by_modality(self) -> Dict[str, Dict[str, Any]]:
+        """Get cache statistics broken down by modality"""
+        stats = {
+            'fundus': {
+                'hits': self._cache_hits['fundus'],
+                'misses': self._cache_misses['fundus'],
+                'hit_rate': self._cache_hits['fundus'] / max(1, self._cache_hits['fundus'] + self._cache_misses['fundus']),
+                'cached_images': sum(1 for v in self._modality_cache.values() if v == 'fundus')
+            },
+            'oct': {
+                'hits': self._cache_hits['oct'],
+                'misses': self._cache_misses['oct'],
+                'hit_rate': self._cache_hits['oct'] / max(1, self._cache_hits['oct'] + self._cache_misses['oct']),
+                'cached_images': sum(1 for v in self._modality_cache.values() if v == 'oct')
+            },
+            'overall': {
+                'total_hits': sum(self._cache_hits.values()),
+                'total_misses': sum(self._cache_misses.values()),
+                'memory_cache_size': len(self._memory_cache),
+                'disk_cache_size_gb': self.metadata['total_size'] / 1e9
+            }
+        }
+        
+        return stats
 
 
 # Global cache instances
@@ -448,20 +763,23 @@ def get_dataset_cache(cache_dir: Optional[Union[str, Path]] = None) -> DatasetCa
     
     if _dataset_cache is None:
         if cache_dir is None:
-            cache_dir = Path.home() / '.cache' / 'retfound' / 'datasets'
+            cache_dir = Path.home() / '.cache' / 'retfound' / 'datasets_v61'
         _dataset_cache = DatasetCache(cache_dir)
     
     return _dataset_cache
 
 
-def get_image_cache(cache_dir: Optional[Union[str, Path]] = None) -> ImageCache:
+def get_image_cache(
+    cache_dir: Optional[Union[str, Path]] = None,
+    image_size: int = 224
+) -> ImageCache:
     """Get global image cache instance"""
     global _image_cache
     
     if _image_cache is None:
         if cache_dir is None:
-            cache_dir = Path.home() / '.cache' / 'retfound' / 'images'
-        _image_cache = ImageCache(cache_dir)
+            cache_dir = Path.home() / '.cache' / 'retfound' / 'images_v61'
+        _image_cache = ImageCache(cache_dir, image_size=image_size)
     
     return _image_cache
 
@@ -484,7 +802,7 @@ def clear_cache(cache_type: Optional[str] = None):
         logger.info("Image cache cleared")
 
 
-def get_cache_stats() -> Dict[str, Any]:
+def get_cache_stats(detailed: bool = False) -> Dict[str, Any]:
     """Get statistics for all caches"""
     stats = {}
     
@@ -497,7 +815,75 @@ def get_cache_stats() -> Dict[str, Any]:
     try:
         image_cache = get_image_cache()
         stats['image_cache'] = image_cache.get_stats()
+        
+        if detailed:
+            stats['image_cache']['modality_stats'] = image_cache.get_cache_stats_by_modality()
     except Exception as e:
         stats['image_cache'] = {'error': str(e)}
     
     return stats
+
+
+def cache_v61_dataset_info(dataset_path: Union[str, Path]):
+    """
+    Cache comprehensive dataset v6.1 information
+    
+    Args:
+        dataset_path: Path to the dataset root
+    """
+    dataset_path = Path(dataset_path)
+    dataset_cache = get_dataset_cache()
+    
+    # Compute dataset statistics
+    fundus_path = dataset_path / 'fundus'
+    oct_path = dataset_path / 'oct'
+    
+    dataset_info = {
+        'version': 'v6.1',
+        'root_path': str(dataset_path),
+        'total_images': 211952,
+        'num_classes': 28,
+        'modalities': {
+            'fundus': {
+                'total': 44815,
+                'train': 35848,
+                'val': 4472,
+                'test': 4495,
+                'num_classes': 18
+            },
+            'oct': {
+                'total': 167137,
+                'train': 133813,
+                'val': 16627,
+                'test': 16697,
+                'num_classes': 10
+            }
+        },
+        'unified_classes': 28,
+        'class_names': [
+            # Fundus classes (0-17)
+            'Fundus_Normal', 'Fundus_DR_Mild', 'Fundus_DR_Moderate', 'Fundus_DR_Severe',
+            'Fundus_DR_Proliferative', 'Fundus_Glaucoma_Suspect', 'Fundus_Glaucoma_Positive',
+            'Fundus_RVO', 'Fundus_RAO', 'Fundus_Hypertensive_Retinopathy', 'Fundus_Drusen',
+            'Fundus_CNV_Wet_AMD', 'Fundus_Myopia_Degenerative', 'Fundus_Retinal_Detachment',
+            'Fundus_Macular_Scar', 'Fundus_Cataract_Suspected', 'Fundus_Optic_Disc_Anomaly',
+            'Fundus_Other',
+            # OCT classes (18-27)
+            'OCT_Normal', 'OCT_DME', 'OCT_CNV', 'OCT_Dry_AMD', 'OCT_ERM',
+            'OCT_Vitreomacular_Interface_Disease', 'OCT_CSR', 'OCT_RVO', 'OCT_Glaucoma', 'OCT_RAO'
+        ],
+        'critical_conditions': ['RAO', 'RVO', 'Retinal_Detachment', 'CNV', 'DR_Proliferative'],
+        'minority_classes': ['ERM', 'RVO_OCT', 'RAO_OCT', 'Myopia_Degenerative'],
+        'cached_at': datetime.now().isoformat()
+    }
+    
+    # Cache the dataset info
+    dataset_cache.cache_dataset_info('caasi_v61', dataset_info)
+    dataset_cache.cache_v61_metadata(dataset_info)
+    
+    # Cache modality-specific stats
+    for modality in ['fundus', 'oct']:
+        stats = dataset_info['modalities'][modality]
+        dataset_cache.cache_modality_stats(modality, stats)
+    
+    logger.info("Cached comprehensive v6.1 dataset information")

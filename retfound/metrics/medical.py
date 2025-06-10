@@ -1,358 +1,406 @@
 """
-Medical Metrics
-==============
-
-Specialized metrics for medical image analysis with focus on ophthalmology.
+Medical-specific metrics for ophthalmology tasks.
+Supports both v4.0 (22 classes) and v6.1 (28 classes) datasets.
 """
 
-import logging
-from typing import Dict, List, Optional, Tuple, Any
-from dataclasses import dataclass
+from typing import Dict, List, Optional, Tuple, Union
 import numpy as np
+import torch
+import torch.nn.functional as F
+from sklearn.metrics import (
+    roc_auc_score, 
+    cohen_kappa_score, 
+    confusion_matrix,
+    precision_recall_fscore_support,
+    classification_report
+)
+from sklearn.preprocessing import label_binarize
 
-try:
-    from sklearn.metrics import (
-        roc_auc_score, precision_recall_curve, auc, cohen_kappa_score,
-        confusion_matrix, classification_report, f1_score,
-        balanced_accuracy_score, matthews_corrcoef, roc_curve,
-        calibration_curve
-    )
-    SKLEARN_AVAILABLE = True
-except ImportError:
-    SKLEARN_AVAILABLE = False
-    logging.warning("scikit-learn not available, some metrics will be disabled")
-
-logger = logging.getLogger(__name__)
-
-
-# Critical conditions requiring high sensitivity
-CRITICAL_CONDITIONS = {
-    'RAO': {'min_sensitivity': 0.99, 'reason': 'Retinal artery occlusion - Emergency'},
-    'RVO': {'min_sensitivity': 0.97, 'reason': 'Retinal vein occlusion - Urgent'},
-    'Retinal_Detachment': {'min_sensitivity': 0.99, 'reason': 'Surgical emergency'},
-    'CNV': {'min_sensitivity': 0.98, 'reason': 'Risk of rapid vision loss'},
-    'DR_Proliferative': {'min_sensitivity': 0.98, 'reason': 'Risk of vitreous hemorrhage'},
-    'DME': {'min_sensitivity': 0.95, 'reason': 'Leading cause of vision loss in diabetics'},
-    'Glaucoma_Positive': {'min_sensitivity': 0.95, 'reason': 'Irreversible vision loss'}
-}
-
-
-@dataclass
-class MetricResult:
-    """Container for metric results"""
-    value: float
-    confidence_interval: Optional[Tuple[float, float]] = None
-    details: Optional[Dict[str, Any]] = None
+from ..core.constants import (
+    DATASET_V61_CLASSES,
+    CRITICAL_CONDITIONS,
+    DATASET_V40_CLASSES  # Pour rétrocompatibilité
+)
 
 
 class OphthalmologyMetrics:
-    """
-    Comprehensive metrics for ophthalmology classification
+    """Comprehensive metrics for ophthalmology classification tasks."""
     
-    Includes standard metrics plus medical-specific evaluations.
-    """
-    
-    def __init__(self, num_classes: int, class_names: Optional[List[str]] = None):
+    def __init__(
+        self,
+        num_classes: int = 28,
+        dataset_version: str = "v6.1",
+        modality: Optional[str] = None,
+        monitor_critical: bool = True
+    ):
         """
-        Initialize metrics calculator
+        Initialize ophthalmology metrics calculator.
         
         Args:
-            num_classes: Number of classes
-            class_names: Names of classes
+            num_classes: Number of classes (22 for v4.0, 28 for v6.1)
+            dataset_version: Dataset version ("v4.0" or "v6.1")
+            modality: Optional modality filter ("fundus", "oct", or None for both)
+            monitor_critical: Whether to monitor critical conditions
         """
         self.num_classes = num_classes
-        self.class_names = class_names or [f"Class_{i}" for i in range(num_classes)]
+        self.dataset_version = dataset_version
+        self.modality = modality
+        self.monitor_critical = monitor_critical
+        
+        # Set class names based on version
+        if dataset_version == "v6.1":
+            self.class_names = DATASET_V61_CLASSES
+            if modality == "fundus":
+                self.active_classes = list(range(18))  # Classes 0-17
+            elif modality == "oct":
+                self.active_classes = list(range(18, 28))  # Classes 18-27
+            else:
+                self.active_classes = list(range(28))  # All classes
+        else:
+            self.class_names = DATASET_V40_CLASSES
+            self.active_classes = list(range(22))
+            
+        # Critical conditions indices
+        self.critical_indices = self._get_critical_indices()
+        
+        # Initialize metric storage
         self.reset()
     
-    def reset(self):
-        """Reset accumulated predictions and targets"""
-        self.predictions = []
-        self.targets = []
-        self.probabilities = []
+    def _get_critical_indices(self) -> List[int]:
+        """Get indices of critical conditions for monitoring."""
+        if not self.monitor_critical or self.dataset_version != "v6.1":
+            return []
+            
+        critical_indices = []
+        for condition, info in CRITICAL_CONDITIONS.items():
+            if condition in self.class_names:
+                idx = self.class_names.index(condition)
+                if idx in self.active_classes:
+                    critical_indices.append(idx)
+        return critical_indices
     
-    def update(self, predictions: np.ndarray, targets: np.ndarray, probabilities: Optional[np.ndarray] = None):
+    def reset(self):
+        """Reset all stored predictions and labels."""
+        self.all_preds = []
+        self.all_labels = []
+        self.all_probs = []
+        self.all_metadata = []
+    
+    def update(
+        self, 
+        preds: torch.Tensor, 
+        labels: torch.Tensor,
+        probs: Optional[torch.Tensor] = None,
+        metadata: Optional[List[Dict]] = None
+    ):
         """
-        Update metrics with batch results
+        Update metrics with batch predictions.
         
         Args:
-            predictions: Predicted classes
-            targets: True classes
-            probabilities: Prediction probabilities (optional)
+            preds: Predicted class indices [batch_size]
+            labels: True class indices [batch_size]
+            probs: Optional prediction probabilities [batch_size, num_classes]
+            metadata: Optional metadata for each sample
         """
-        self.predictions.extend(predictions)
-        self.targets.extend(targets)
-        if probabilities is not None:
-            self.probabilities.extend(probabilities)
-    
-    def compute_metrics(self) -> Dict[str, Any]:
-        """Compute comprehensive medical metrics"""
-        if not self.predictions:
-            return {}
+        self.all_preds.extend(preds.cpu().numpy())
+        self.all_labels.extend(labels.cpu().numpy())
         
-        y_true = np.array(self.targets)
-        y_pred = np.array(self.predictions)
-        y_prob = np.array(self.probabilities) if self.probabilities else None
+        if probs is not None:
+            self.all_probs.extend(probs.cpu().numpy())
+            
+        if metadata is not None:
+            self.all_metadata.extend(metadata)
+    
+    def compute(self) -> Dict[str, float]:
+        """
+        Compute all metrics.
+        
+        Returns:
+            Dictionary containing all computed metrics
+        """
+        if len(self.all_preds) == 0:
+            return {}
+            
+        preds = np.array(self.all_preds)
+        labels = np.array(self.all_labels)
         
         metrics = {}
         
         # Basic metrics
-        metrics['accuracy'] = (y_pred == y_true).mean() * 100
-        
-        if SKLEARN_AVAILABLE:
-            metrics['balanced_accuracy'] = balanced_accuracy_score(y_true, y_pred) * 100
-            metrics['cohen_kappa'] = cohen_kappa_score(y_true, y_pred)
-            metrics['matthews_corrcoef'] = matthews_corrcoef(y_true, y_pred)
+        metrics['accuracy'] = self._compute_accuracy(preds, labels)
+        metrics['balanced_accuracy'] = self._compute_balanced_accuracy(preds, labels)
         
         # Per-class metrics
-        class_metrics = self._compute_class_metrics(y_true, y_pred, y_prob)
-        metrics.update(class_metrics)
+        precision, recall, f1, support = precision_recall_fscore_support(
+            labels, preds, labels=self.active_classes, average=None, zero_division=0
+        )
         
-        # Overall medical metrics
-        medical_metrics = self._compute_medical_metrics(y_true, y_pred, y_prob)
-        metrics.update(medical_metrics)
+        # Store per-class metrics
+        for i, class_idx in enumerate(self.active_classes):
+            class_name = self.class_names[class_idx]
+            metrics[f'precision_{class_name}'] = precision[i]
+            metrics[f'recall_{class_name}'] = recall[i]
+            metrics[f'f1_{class_name}'] = f1[i]
+            metrics[f'support_{class_name}'] = support[i]
         
-        # Check critical conditions
-        critical_alerts = self._check_critical_conditions(metrics)
-        if critical_alerts:
-            metrics['critical_alerts'] = critical_alerts
+        # Weighted and macro averages
+        metrics['precision_macro'] = np.mean(precision)
+        metrics['recall_macro'] = np.mean(recall)
+        metrics['f1_macro'] = np.mean(f1)
         
-        return metrics
-    
-    def _compute_class_metrics(self, y_true: np.ndarray, y_pred: np.ndarray, 
-                              y_prob: Optional[np.ndarray] = None) -> Dict[str, float]:
-        """Compute per-class metrics"""
-        metrics = {}
+        metrics['precision_weighted'] = np.average(precision, weights=support)
+        metrics['recall_weighted'] = np.average(recall, weights=support)
+        metrics['f1_weighted'] = np.average(f1, weights=support)
         
-        for i in range(self.num_classes):
-            if i >= len(self.class_names):
-                class_name = f"Class_{i}"
-            else:
-                class_name = self.class_names[i]
-            
-            # Binary metrics for each class
-            y_true_binary = (y_true == i).astype(int)
-            y_pred_binary = (y_pred == i).astype(int)
-            
-            # Confusion matrix components
-            tp = ((y_true_binary == 1) & (y_pred_binary == 1)).sum()
-            tn = ((y_true_binary == 0) & (y_pred_binary == 0)).sum()
-            fp = ((y_true_binary == 0) & (y_pred_binary == 1)).sum()
-            fn = ((y_true_binary == 1) & (y_pred_binary == 0)).sum()
-            
-            # Sensitivity (Recall)
-            sensitivity = tp / (tp + fn) if (tp + fn) > 0 else 0
-            metrics[f'{class_name}_sensitivity'] = sensitivity * 100
-            
-            # Specificity
-            specificity = tn / (tn + fp) if (tn + fp) > 0 else 0
-            metrics[f'{class_name}_specificity'] = specificity * 100
-            
-            # PPV (Precision)
-            ppv = tp / (tp + fp) if (tp + fp) > 0 else 0
-            metrics[f'{class_name}_ppv'] = ppv * 100
-            
-            # NPV
-            npv = tn / (tn + fn) if (tn + fn) > 0 else 0
-            metrics[f'{class_name}_npv'] = npv * 100
-            
-            # F1 Score
-            f1 = 2 * tp / (2 * tp + fp + fn) if (2 * tp + fp + fn) > 0 else 0
-            metrics[f'{class_name}_f1'] = f1
-            
-            # AUC if probabilities available
-            if y_prob is not None and y_prob.shape[1] > i and SKLEARN_AVAILABLE:
-                y_prob_binary = y_prob[:, i]
-                try:
-                    if len(np.unique(y_true_binary)) > 1:
-                        auc_score = roc_auc_score(y_true_binary, y_prob_binary)
-                    else:
-                        auc_score = 0.5
-                except:
-                    auc_score = 0.5
-                metrics[f'{class_name}_auc'] = auc_score
+        # Cohen's Kappa
+        metrics['cohen_kappa'] = cohen_kappa_score(labels, preds)
+        
+        # Quadratic Kappa for DR grading (if applicable)
+        if self._has_dr_classes(labels):
+            metrics['quadratic_kappa'] = self._compute_quadratic_kappa_dr(preds, labels)
+        
+        # AUC-ROC (if probabilities available)
+        if len(self.all_probs) > 0:
+            auc_metrics = self._compute_auc_metrics(np.array(self.all_probs), labels)
+            metrics.update(auc_metrics)
+        
+        # Critical conditions monitoring
+        if self.monitor_critical and len(self.critical_indices) > 0:
+            critical_metrics = self._compute_critical_metrics(preds, labels)
+            metrics.update(critical_metrics)
+        
+        # Modality-specific metrics (v6.1 only)
+        if self.dataset_version == "v6.1" and self.modality is None:
+            modality_metrics = self._compute_modality_metrics(preds, labels)
+            metrics.update(modality_metrics)
         
         return metrics
     
-    def _compute_medical_metrics(self, y_true: np.ndarray, y_pred: np.ndarray,
-                                y_prob: Optional[np.ndarray] = None) -> Dict[str, float]:
-        """Compute medical-specific metrics"""
+    def _compute_accuracy(self, preds: np.ndarray, labels: np.ndarray) -> float:
+        """Compute overall accuracy."""
+        return np.mean(preds == labels)
+    
+    def _compute_balanced_accuracy(self, preds: np.ndarray, labels: np.ndarray) -> float:
+        """Compute balanced accuracy across all classes."""
+        cm = confusion_matrix(labels, preds, labels=self.active_classes)
+        per_class_accuracy = np.diag(cm) / (cm.sum(axis=1) + 1e-10)
+        return np.mean(per_class_accuracy)
+    
+    def _has_dr_classes(self, labels: np.ndarray) -> bool:
+        """Check if DR classes are present in labels."""
+        dr_classes = ["DR_Mild", "DR_Moderate", "DR_Severe", "DR_Proliferative"]
+        dr_indices = []
+        
+        for dr_class in dr_classes:
+            if dr_class in self.class_names:
+                idx = self.class_names.index(dr_class)
+                if idx in self.active_classes:
+                    dr_indices.append(idx)
+        
+        return len(dr_indices) > 0 and any(label in dr_indices for label in labels)
+    
+    def _compute_quadratic_kappa_dr(self, preds: np.ndarray, labels: np.ndarray) -> float:
+        """Compute quadratic kappa specifically for DR grading."""
+        # Map predictions to DR grades (0-4)
+        dr_mapping = {
+            "Normal_Fundus": 0,
+            "DR_Mild": 1,
+            "DR_Moderate": 2,
+            "DR_Severe": 3,
+            "DR_Proliferative": 4
+        }
+        
+        # Create reverse mapping from class index to DR grade
+        idx_to_grade = {}
+        for class_name, grade in dr_mapping.items():
+            if class_name in self.class_names:
+                idx = self.class_names.index(class_name)
+                idx_to_grade[idx] = grade
+        
+        # Filter and map to DR grades
+        dr_mask = np.array([label in idx_to_grade for label in labels])
+        if dr_mask.sum() == 0:
+            return 0.0
+            
+        dr_preds = np.array([idx_to_grade.get(p, -1) for p in preds[dr_mask]])
+        dr_labels = np.array([idx_to_grade[l] for l in labels[dr_mask]])
+        
+        # Remove invalid predictions
+        valid_mask = dr_preds >= 0
+        if valid_mask.sum() == 0:
+            return 0.0
+            
+        return cohen_kappa_score(
+            dr_labels[valid_mask], 
+            dr_preds[valid_mask], 
+            weights='quadratic'
+        )
+    
+    def _compute_auc_metrics(self, probs: np.ndarray, labels: np.ndarray) -> Dict[str, float]:
+        """Compute AUC-ROC metrics."""
         metrics = {}
         
-        # Mean sensitivity and specificity
-        sensitivities = []
-        specificities = []
+        # Binarize labels for multi-class AUC
+        labels_bin = label_binarize(labels, classes=self.active_classes)
         
-        for i in range(self.num_classes):
-            class_name = self.class_names[i] if i < len(self.class_names) else f"Class_{i}"
-            sens_key = f'{class_name}_sensitivity'
-            spec_key = f'{class_name}_specificity'
-            
-            if sens_key in metrics:
-                sensitivities.append(metrics[sens_key])
-            if spec_key in metrics:
-                specificities.append(metrics[spec_key])
+        # Filter probabilities to active classes only
+        if len(self.active_classes) < self.num_classes:
+            probs = probs[:, self.active_classes]
         
-        if sensitivities:
-            metrics['mean_sensitivity'] = np.mean(sensitivities)
-        if specificities:
-            metrics['mean_specificity'] = np.mean(specificities)
-        
-        # Overall AUC
-        if y_prob is not None and SKLEARN_AVAILABLE:
-            try:
-                if self.num_classes > 2:
-                    metrics['auc_macro'] = roc_auc_score(
-                        y_true, y_prob, multi_class='ovr', average='macro'
-                    )
-                    metrics['auc_weighted'] = roc_auc_score(
-                        y_true, y_prob, multi_class='ovr', average='weighted'
-                    )
-                else:
-                    metrics['auc_macro'] = roc_auc_score(y_true, y_prob[:, 1])
-                    metrics['auc_weighted'] = metrics['auc_macro']
-            except:
-                metrics['auc_macro'] = 0.5
-                metrics['auc_weighted'] = 0.5
-        
-        # Diabetic Retinopathy specific: Quadratic Kappa
-        dr_classes = [i for i, name in enumerate(self.class_names)
-                     if any(dr in name.lower() for dr in ['dr_', 'diabetic', 'mild', 'moderate', 'severe', 'proliferative'])]
-        
-        if len(dr_classes) >= 4 and SKLEARN_AVAILABLE:
-            dr_mask = np.isin(y_true, dr_classes) | np.isin(y_pred, dr_classes)
-            if dr_mask.any():
+        # Per-class AUC
+        for i, class_idx in enumerate(self.active_classes):
+            if labels_bin[:, i].sum() > 0:  # Class present in labels
                 try:
-                    metrics['dr_quadratic_kappa'] = cohen_kappa_score(
-                        y_true[dr_mask], y_pred[dr_mask], weights='quadratic'
-                    )
+                    auc = roc_auc_score(labels_bin[:, i], probs[:, i])
+                    class_name = self.class_names[class_idx]
+                    metrics[f'auc_{class_name}'] = auc
                 except:
                     pass
         
+        # Macro and weighted AUC
+        try:
+            # Only compute for classes present in labels
+            present_classes = [i for i in range(len(self.active_classes)) 
+                             if labels_bin[:, i].sum() > 0]
+            if len(present_classes) > 1:
+                metrics['auc_macro'] = roc_auc_score(
+                    labels_bin[:, present_classes], 
+                    probs[:, present_classes], 
+                    average='macro'
+                )
+                metrics['auc_weighted'] = roc_auc_score(
+                    labels_bin[:, present_classes], 
+                    probs[:, present_classes], 
+                    average='weighted'
+                )
+        except:
+            pass
+        
         return metrics
     
-    def _check_critical_conditions(self, metrics: Dict[str, float]) -> List[Dict[str, Any]]:
-        """Check performance on critical conditions"""
-        critical_alerts = []
+    def _compute_critical_metrics(self, preds: np.ndarray, labels: np.ndarray) -> Dict[str, float]:
+        """Compute metrics for critical conditions."""
+        metrics = {}
         
-        for condition, requirements in CRITICAL_CONDITIONS.items():
-            for i, class_name in enumerate(self.class_names[:self.num_classes]):
-                if condition in class_name:
-                    sensitivity = metrics.get(f'{class_name}_sensitivity', 0)
-                    if sensitivity < requirements['min_sensitivity'] * 100:
-                        critical_alerts.append({
-                            'class': class_name,
-                            'current_sensitivity': sensitivity,
-                            'required_sensitivity': requirements['min_sensitivity'] * 100,
-                            'reason': requirements['reason']
-                        })
+        for idx in self.critical_indices:
+            condition_name = self.class_names[idx]
+            condition_mask = labels == idx
+            
+            if condition_mask.sum() > 0:
+                # True positives and false negatives
+                tp = ((preds == idx) & condition_mask).sum()
+                fn = ((preds != idx) & condition_mask).sum()
+                
+                sensitivity = tp / (tp + fn + 1e-10)
+                
+                # Get threshold from constants
+                threshold = CRITICAL_CONDITIONS.get(condition_name, {}).get('min_sensitivity', 0.9)
+                
+                metrics[f'critical_{condition_name}_sensitivity'] = sensitivity
+                metrics[f'critical_{condition_name}_meets_threshold'] = float(sensitivity >= threshold)
+                
+                # Additional critical metrics
+                tn = ((preds != idx) & ~condition_mask).sum()
+                fp = ((preds == idx) & ~condition_mask).sum()
+                
+                specificity = tn / (tn + fp + 1e-10)
+                metrics[f'critical_{condition_name}_specificity'] = specificity
         
-        return critical_alerts
+        # Overall critical performance
+        if len(self.critical_indices) > 0:
+            critical_sensitivities = []
+            for idx in self.critical_indices:
+                condition_name = self.class_names[idx]
+                if f'critical_{condition_name}_sensitivity' in metrics:
+                    critical_sensitivities.append(metrics[f'critical_{condition_name}_sensitivity'])
+            
+            if critical_sensitivities:
+                metrics['critical_avg_sensitivity'] = np.mean(critical_sensitivities)
+                metrics['critical_min_sensitivity'] = np.min(critical_sensitivities)
+        
+        return metrics
     
-    def confusion_matrix(self) -> Optional[np.ndarray]:
-        """Get confusion matrix"""
-        if not self.predictions or not SKLEARN_AVAILABLE:
-            return None
+    def _compute_modality_metrics(self, preds: np.ndarray, labels: np.ndarray) -> Dict[str, float]:
+        """Compute separate metrics for fundus and OCT modalities."""
+        metrics = {}
         
-        return confusion_matrix(self.targets, self.predictions)
+        # Fundus metrics (classes 0-17)
+        fundus_mask = labels < 18
+        if fundus_mask.sum() > 0:
+            fundus_preds = preds[fundus_mask]
+            fundus_labels = labels[fundus_mask]
+            metrics['fundus_accuracy'] = np.mean(fundus_preds == fundus_labels)
+            
+            # Only compute if predictions are in fundus range
+            fundus_correct_range = fundus_preds < 18
+            if fundus_correct_range.sum() > 0:
+                metrics['fundus_correct_modality'] = fundus_correct_range.mean()
+        
+        # OCT metrics (classes 18-27)
+        oct_mask = labels >= 18
+        if oct_mask.sum() > 0:
+            oct_preds = preds[oct_mask]
+            oct_labels = labels[oct_mask]
+            metrics['oct_accuracy'] = np.mean(oct_preds == oct_labels)
+            
+            # Only compute if predictions are in OCT range
+            oct_correct_range = oct_preds >= 18
+            if oct_correct_range.sum() > 0:
+                metrics['oct_correct_modality'] = oct_correct_range.mean()
+        
+        return metrics
     
-    def classification_report(self) -> Optional[str]:
-        """Get classification report"""
-        if not self.predictions or not SKLEARN_AVAILABLE:
-            return None
+    def get_classification_report(self, output_dict: bool = False) -> Union[str, Dict]:
+        """
+        Get detailed classification report.
+        
+        Args:
+            output_dict: If True, return as dictionary
+            
+        Returns:
+            Classification report as string or dictionary
+        """
+        if len(self.all_preds) == 0:
+            return {} if output_dict else "No predictions available"
+        
+        preds = np.array(self.all_preds)
+        labels = np.array(self.all_labels)
+        
+        # Create target names for active classes
+        target_names = [self.class_names[i] for i in self.active_classes]
         
         return classification_report(
-            self.targets,
-            self.predictions,
-            target_names=self.class_names[:self.num_classes]
+            labels, preds,
+            labels=self.active_classes,
+            target_names=target_names,
+            output_dict=output_dict,
+            zero_division=0
         )
-
-
-def compute_sensitivity_specificity(y_true: np.ndarray, y_pred: np.ndarray) -> Tuple[float, float]:
-    """
-    Compute sensitivity and specificity
     
-    Args:
-        y_true: True labels (binary)
-        y_pred: Predicted labels (binary)
+    def get_confusion_matrix(self, normalize: Optional[str] = None) -> np.ndarray:
+        """
+        Get confusion matrix.
         
-    Returns:
-        Tuple of (sensitivity, specificity)
-    """
-    tp = ((y_true == 1) & (y_pred == 1)).sum()
-    tn = ((y_true == 0) & (y_pred == 0)).sum()
-    fp = ((y_true == 0) & (y_pred == 1)).sum()
-    fn = ((y_true == 1) & (y_pred == 0)).sum()
-    
-    sensitivity = tp / (tp + fn) if (tp + fn) > 0 else 0
-    specificity = tn / (tn + fp) if (tn + fp) > 0 else 0
-    
-    return sensitivity, specificity
-
-
-def compute_ppv_npv(y_true: np.ndarray, y_pred: np.ndarray) -> Tuple[float, float]:
-    """
-    Compute positive and negative predictive values
-    
-    Args:
-        y_true: True labels (binary)
-        y_pred: Predicted labels (binary)
+        Args:
+            normalize: {'true', 'pred', 'all'} or None
+            
+        Returns:
+            Confusion matrix
+        """
+        if len(self.all_preds) == 0:
+            return np.zeros((len(self.active_classes), len(self.active_classes)))
         
-    Returns:
-        Tuple of (PPV, NPV)
-    """
-    tp = ((y_true == 1) & (y_pred == 1)).sum()
-    tn = ((y_true == 0) & (y_pred == 0)).sum()
-    fp = ((y_true == 0) & (y_pred == 1)).sum()
-    fn = ((y_true == 1) & (y_pred == 0)).sum()
-    
-    ppv = tp / (tp + fp) if (tp + fp) > 0 else 0
-    npv = tn / (tn + fn) if (tn + fn) > 0 else 0
-    
-    return ppv, npv
-
-
-def compute_confusion_matrix(y_true: np.ndarray, y_pred: np.ndarray) -> np.ndarray:
-    """Compute confusion matrix"""
-    if SKLEARN_AVAILABLE:
-        return confusion_matrix(y_true, y_pred)
-    else:
-        # Simple implementation
-        n_classes = max(y_true.max(), y_pred.max()) + 1
-        cm = np.zeros((n_classes, n_classes), dtype=int)
-        for i in range(len(y_true)):
-            cm[y_true[i], y_pred[i]] += 1
+        preds = np.array(self.all_preds)
+        labels = np.array(self.all_labels)
+        
+        cm = confusion_matrix(labels, preds, labels=self.active_classes)
+        
+        if normalize:
+            if normalize == 'true':
+                cm = cm.astype('float') / (cm.sum(axis=1, keepdims=True) + 1e-10)
+            elif normalize == 'pred':
+                cm = cm.astype('float') / (cm.sum(axis=0, keepdims=True) + 1e-10)
+            elif normalize == 'all':
+                cm = cm.astype('float') / (cm.sum() + 1e-10)
+        
         return cm
-
-
-def compute_roc_auc(y_true: np.ndarray, y_score: np.ndarray, 
-                   average: str = 'macro') -> float:
-    """Compute ROC AUC score"""
-    if not SKLEARN_AVAILABLE:
-        return 0.5
-    
-    try:
-        if y_score.ndim == 1:
-            # Binary classification
-            return roc_auc_score(y_true, y_score)
-        else:
-            # Multi-class
-            return roc_auc_score(y_true, y_score, multi_class='ovr', average=average)
-    except:
-        return 0.5
-
-
-def compute_cohen_kappa(y_true: np.ndarray, y_pred: np.ndarray, 
-                       weights: Optional[str] = None) -> float:
-    """Compute Cohen's Kappa score"""
-    if not SKLEARN_AVAILABLE:
-        return 0.0
-    
-    return cohen_kappa_score(y_true, y_pred, weights=weights)
-
-
-def compute_matthews_corrcoef(y_true: np.ndarray, y_pred: np.ndarray) -> float:
-    """Compute Matthews correlation coefficient"""
-    if not SKLEARN_AVAILABLE:
-        return 0.0
-    
-    return matthews_corrcoef(y_true, y_pred)

@@ -1,9 +1,10 @@
 """
-Trainer Classes for RETFound
-===========================
+Trainer Classes for RETFound - Dataset v6.1
+==========================================
 
 Implements the main training logic with support for advanced features
 like mixed precision, gradient accumulation, and callback system.
+Updated for dataset v6.1 with 28 classes and critical pathology monitoring.
 """
 
 import os
@@ -19,9 +20,14 @@ import torch.nn as nn
 from torch.cuda.amp import autocast, GradScaler
 from torch.utils.data import DataLoader
 from tqdm import tqdm
+import numpy as np
 
 from ..core.config import RETFoundConfig
 from ..core.registry import Registry
+from ..core.constants import (
+    NUM_TOTAL_CLASSES, UNIFIED_CLASS_NAMES,
+    CRITICAL_CONDITIONS, CLASS_WEIGHTS_V61
+)
 from ..metrics import OphthalmologyMetrics
 from ..data.transforms import MixupCutmixTransform
 from .optimizers import create_optimizer, EMA, SAM
@@ -135,7 +141,7 @@ class BaseTrainer(ABC):
         self.callback_handler.on_train_begin(self)
         
         try:
-            for epoch in range(start_epoch, self.config.epochs):
+            for epoch in range(start_epoch, self.config.training.epochs):
                 self.epoch = epoch
                 epoch_start_time = time.time()
                 
@@ -218,7 +224,7 @@ class BaseTrainer(ABC):
             'scaler_state_dict': self.scaler.state_dict() if self.scaler else None,
             'ema_state_dict': self.ema.state_dict() if self.ema else None,
             'history': dict(self.history),
-            'config': self.config.to_dict(),
+            'config': self.config.to_dict() if hasattr(self.config, 'to_dict') else None,
             'best_metric': self.best_metric,
             'best_epoch': self.best_epoch,
             **kwargs
@@ -267,8 +273,9 @@ class BaseTrainer(ABC):
 
 
 @register_trainer("retfound")
+@register_trainer("retfound_v61")
 class RETFoundTrainer(BaseTrainer):
-    """Advanced trainer for RETFound with all optimizations"""
+    """Advanced trainer for RETFound with dataset v6.1 support"""
     
     def __init__(
         self,
@@ -279,33 +286,110 @@ class RETFoundTrainer(BaseTrainer):
         """Initialize RETFound trainer"""
         super().__init__(model, config, device)
         
+        # Get number of classes from model or config
+        if hasattr(model, 'num_classes'):
+            num_classes = model.num_classes
+        elif hasattr(config, 'model') and hasattr(config.model, 'num_classes'):
+            num_classes = config.model.num_classes
+        else:
+            num_classes = NUM_TOTAL_CLASSES  # Default to 28 for v6.1
+        
         # Metrics
         self.train_metrics = OphthalmologyMetrics(
-            config.num_classes,
-            device=self.device
+            num_classes=num_classes,
+            device=self.device,
+            class_names=UNIFIED_CLASS_NAMES if num_classes == 28 else None
         )
         self.val_metrics = OphthalmologyMetrics(
-            config.num_classes,
-            device=self.device
+            num_classes=num_classes,
+            device=self.device,
+            class_names=UNIFIED_CLASS_NAMES if num_classes == 28 else None
         )
         
+        # Dataset v6.1 specific monitoring
+        self.critical_class_indices = self._get_critical_class_indices()
+        self.minority_class_indices = self._get_minority_class_indices()
+        
         # Mixed precision
-        self.scaler = GradScaler() if config.use_amp else None
+        if hasattr(config, 'optimization'):
+            use_amp = config.optimization.use_amp
+            amp_dtype = config.optimization.amp_dtype
+        else:
+            use_amp = getattr(config, 'use_amp', True)
+            amp_dtype = getattr(config, 'amp_dtype', None)
+        
+        self.scaler = GradScaler() if use_amp else None
+        self.amp_dtype = self._get_amp_dtype(amp_dtype)
         
         # Compile model if available
-        if config.use_compile and hasattr(torch, 'compile'):
-            logger.info(f"Compiling model with mode: {config.compile_mode}")
-            self.model = torch.compile(self.model, mode=config.compile_mode)
+        if hasattr(config, 'optimization') and config.optimization.use_compile:
+            compile_mode = config.optimization.compile_mode
+        else:
+            compile_mode = getattr(config, 'compile_mode', 'default')
+        
+        if hasattr(torch, 'compile') and getattr(config, 'use_compile', False):
+            logger.info(f"Compiling model with mode: {compile_mode}")
+            self.model = torch.compile(self.model, mode=compile_mode)
         
         # MixUp/CutMix
         self.mixup_cutmix = None
-        if config.use_mixup or config.use_cutmix:
-            self.mixup_cutmix = MixupCutmixTransform(
-                mixup_alpha=config.mixup_alpha,
-                cutmix_alpha=config.cutmix_alpha,
-                mixup_prob=config.mixup_prob,
-                cutmix_prob=config.cutmix_prob
-            )
+        if hasattr(config, 'augmentation'):
+            use_mixup = config.augmentation.use_mixup
+            use_cutmix = config.augmentation.use_cutmix
+            mixup_config = {
+                'mixup_alpha': config.augmentation.mixup_alpha,
+                'cutmix_alpha': config.augmentation.cutmix_alpha,
+                'mixup_prob': config.augmentation.mixup_prob,
+                'cutmix_prob': config.augmentation.cutmix_prob
+            }
+        else:
+            use_mixup = getattr(config, 'use_mixup', True)
+            use_cutmix = getattr(config, 'use_cutmix', True)
+            mixup_config = {
+                'mixup_alpha': getattr(config, 'mixup_alpha', 0.8),
+                'cutmix_alpha': getattr(config, 'cutmix_alpha', 1.0),
+                'mixup_prob': getattr(config, 'mixup_prob', 0.5),
+                'cutmix_prob': getattr(config, 'cutmix_prob', 0.5)
+            }
+        
+        if use_mixup or use_cutmix:
+            self.mixup_cutmix = MixupCutmixTransform(**mixup_config)
+    
+    def _get_amp_dtype(self, amp_dtype: Optional[str]) -> Optional[torch.dtype]:
+        """Get AMP dtype from string"""
+        if amp_dtype == 'float16':
+            return torch.float16
+        elif amp_dtype == 'bfloat16':
+            return torch.bfloat16
+        return None
+    
+    def _get_critical_class_indices(self) -> Dict[str, List[int]]:
+        """Get indices of critical classes for monitoring"""
+        critical_indices = {}
+        
+        for condition, info in CRITICAL_CONDITIONS.items():
+            if 'unified_idx' in info:
+                critical_indices[condition] = info['unified_idx']
+        
+        return critical_indices
+    
+    def _get_minority_class_indices(self) -> Dict[str, int]:
+        """Get indices of minority classes from v6.1"""
+        minority_indices = {}
+        
+        # Map class weights to indices
+        class_name_to_idx = {
+            "04_ERM": 22,  # OCT class 4 -> unified index 22 (18+4)
+            "07_RVO_OCT": 25,  # OCT class 7 -> unified index 25 (18+7)
+            "09_RAO_OCT": 27,  # OCT class 9 -> unified index 27 (18+9)
+            "12_Myopia_Degenerative": 12,  # Fundus class 12
+        }
+        
+        for class_name, weight in CLASS_WEIGHTS_V61.items():
+            if class_name in class_name_to_idx:
+                minority_indices[class_name] = class_name_to_idx[class_name]
+        
+        return minority_indices
     
     def setup_training(self, train_dataset=None):
         """Setup training components"""
@@ -324,7 +408,7 @@ class RETFoundTrainer(BaseTrainer):
             self.config
         )
         
-        # Create loss function
+        # Create loss function with class weights for v6.1
         self.criterion = create_loss_function(
             self.config,
             train_dataset=train_dataset,
@@ -332,13 +416,21 @@ class RETFoundTrainer(BaseTrainer):
         )
         
         # Setup EMA
-        if self.config.use_ema:
-            self.ema = EMA(
-                self.model,
-                decay=self.config.ema_decay,
-                update_after_step=self.config.ema_update_after_step,
-                update_every=self.config.ema_update_every
-            )
+        if hasattr(self.config, 'optimization') and self.config.optimization.use_ema:
+            ema_config = {
+                'decay': self.config.optimization.ema_decay,
+                'update_after_step': self.config.optimization.ema_update_after_step,
+                'update_every': self.config.optimization.ema_update_every
+            }
+        else:
+            ema_config = {
+                'decay': getattr(self.config, 'ema_decay', 0.9999),
+                'update_after_step': getattr(self.config, 'ema_update_after_step', 100),
+                'update_every': getattr(self.config, 'ema_update_every', 10)
+            }
+        
+        if getattr(self.config, 'use_ema', True):
+            self.ema = EMA(self.model, **ema_config)
         
         # Setup callbacks
         callbacks = create_callbacks(self.config, trainer=self)
@@ -346,24 +438,43 @@ class RETFoundTrainer(BaseTrainer):
             self.callback_handler.add_callback(callback)
         
         logger.info("Training setup complete")
+        logger.info(f"Number of classes: {self.train_metrics.num_classes}")
+        logger.info(f"Critical conditions monitored: {list(self.critical_class_indices.keys())}")
+        logger.info(f"Minority classes monitored: {list(self.minority_class_indices.keys())}")
     
     def train_epoch(self, train_loader: DataLoader, epoch: int) -> Tuple[float, Dict[str, float]]:
-        """Train for one epoch"""
+        """Train for one epoch with v6.1 monitoring"""
         self.model.train()
         self.train_metrics.reset()
         
         total_loss = 0
         num_batches = len(train_loader)
-        accumulation_steps = self.config.gradient_accumulation
+        
+        # Get gradient accumulation steps
+        if hasattr(self.config, 'training'):
+            accumulation_steps = self.config.training.gradient_accumulation_steps
+        else:
+            accumulation_steps = getattr(self.config, 'gradient_accumulation', 1)
         
         # Memory monitoring
         if torch.cuda.is_available():
             torch.cuda.reset_peak_memory_stats()
         
         # Progress bar
-        pbar = tqdm(train_loader, desc=f"Epoch {epoch}/{self.config.epochs}")
+        pbar = tqdm(train_loader, desc=f"Epoch {epoch}/{self.config.training.epochs if hasattr(self.config, 'training') else self.config.epochs}")
         
-        for batch_idx, (images, labels) in enumerate(pbar):
+        # Track per-class performance
+        class_correct = torch.zeros(self.train_metrics.num_classes)
+        class_total = torch.zeros(self.train_metrics.num_classes)
+        
+        for batch_idx, batch in enumerate(pbar):
+            # Handle different batch formats
+            if len(batch) == 2:
+                images, labels = batch
+                metadata = None
+            else:
+                images, labels, metadata = batch
+            
             # Batch start callback
             self.callback_handler.on_batch_begin(self, batch_idx)
             
@@ -372,7 +483,7 @@ class RETFoundTrainer(BaseTrainer):
             labels = labels.to(self.device, non_blocking=True)
             
             # Forward pass
-            loss, outputs = self._forward_pass(images, labels)
+            loss, outputs = self._forward_pass(images, labels, metadata)
             
             # Scale loss for gradient accumulation
             loss = loss / accumulation_steps
@@ -391,13 +502,23 @@ class RETFoundTrainer(BaseTrainer):
             # Only update metrics for non-mixed batches
             if not hasattr(self, '_mixed_batch') or not self._mixed_batch:
                 self.train_metrics.update(outputs.detach(), labels)
+                
+                # Track per-class accuracy
+                _, preds = outputs.max(1)
+                correct = preds.eq(labels).float()
+                for i in range(labels.size(0)):
+                    class_correct[labels[i]] += correct[i]
+                    class_total[labels[i]] += 1
             
             # Update progress bar
             if batch_idx % self.config.log_interval == 0:
                 current_lr = self.optimizer.param_groups[0]['lr']
+                gpu_memory = torch.cuda.max_memory_allocated() / 1e9 if torch.cuda.is_available() else 0
+                
                 pbar.set_postfix({
                     'loss': f'{total_loss/(batch_idx+1):.4f}',
                     'lr': f'{current_lr:.2e}',
+                    'gpu': f'{gpu_memory:.1f}GB'
                 })
             
             # Batch end callback
@@ -413,10 +534,18 @@ class RETFoundTrainer(BaseTrainer):
         avg_loss = total_loss / num_batches
         metrics = self.train_metrics.compute()
         
+        # Add per-class accuracy for critical conditions
+        self._log_critical_class_performance(class_correct, class_total, prefix='train')
+        
         return avg_loss, metrics
     
-    def _forward_pass(self, images: torch.Tensor, labels: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
-        """Forward pass with optional MixUp/CutMix"""
+    def _forward_pass(
+        self, 
+        images: torch.Tensor, 
+        labels: torch.Tensor,
+        metadata: Optional[Dict] = None
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        """Forward pass with optional MixUp/CutMix and modality support"""
         self._mixed_batch = False
         
         # Apply MixUp/CutMix if enabled
@@ -425,9 +554,18 @@ class RETFoundTrainer(BaseTrainer):
             self._mixed_batch = method != 'none'
             self._mix_params = (labels_a, labels_b, lam)
         
+        # Get modality hint if available
+        modality = None
+        if metadata and 'modality' in metadata:
+            modality = metadata['modality']
+        
         # Forward pass with mixed precision
-        with autocast(enabled=self.config.use_amp, dtype=self.config.amp_dtype):
-            outputs = self.model(images)
+        with autocast(enabled=self.scaler is not None, dtype=self.amp_dtype):
+            # Pass modality hint if model supports it
+            if hasattr(self.model, 'forward') and 'modality' in self.model.forward.__code__.co_varnames:
+                outputs = self.model(images, modality=modality)
+            else:
+                outputs = self.model(images)
             
             # Calculate loss
             if self._mixed_batch:
@@ -452,10 +590,12 @@ class RETFoundTrainer(BaseTrainer):
             self.scaler.unscale_(self.optimizer)
         
         # Gradient clipping
-        if self.config.gradient_clip > 0:
+        gradient_clip = self.config.optimization.gradient_clip if hasattr(self.config, 'optimization') else self.config.gradient_clip
+        
+        if gradient_clip > 0:
             grad_norm = torch.nn.utils.clip_grad_norm_(
                 self.model.parameters(),
-                max_norm=self.config.gradient_clip
+                max_norm=gradient_clip
             )
         else:
             grad_norm = 0
@@ -498,7 +638,7 @@ class RETFoundTrainer(BaseTrainer):
         return 0.0  # Placeholder
     
     def validate(self, val_loader: DataLoader) -> Tuple[float, Dict[str, float]]:
-        """Validate model"""
+        """Validate model with v6.1 critical class monitoring"""
         # Use EMA model if available
         model_to_eval = self.ema.ema_model if self.ema else self.model
         model_to_eval.eval()
@@ -507,24 +647,103 @@ class RETFoundTrainer(BaseTrainer):
         total_loss = 0
         num_batches = len(val_loader)
         
+        # Track per-class performance
+        class_correct = torch.zeros(self.val_metrics.num_classes)
+        class_total = torch.zeros(self.val_metrics.num_classes)
+        
         with torch.no_grad():
-            for images, labels in tqdm(val_loader, desc="Validation"):
+            for batch in tqdm(val_loader, desc="Validation"):
+                # Handle different batch formats
+                if len(batch) == 2:
+                    images, labels = batch
+                    metadata = None
+                else:
+                    images, labels, metadata = batch
+                
                 images = images.to(self.device, non_blocking=True)
                 labels = labels.to(self.device, non_blocking=True)
                 
+                # Get modality hint if available
+                modality = None
+                if metadata and 'modality' in metadata:
+                    modality = metadata['modality']
+                
                 # Forward pass
-                with autocast(enabled=self.config.use_amp, dtype=self.config.amp_dtype):
-                    outputs = model_to_eval(images)
+                with autocast(enabled=self.scaler is not None, dtype=self.amp_dtype):
+                    if hasattr(model_to_eval, 'forward') and 'modality' in model_to_eval.forward.__code__.co_varnames:
+                        outputs = model_to_eval(images, modality=modality)
+                    else:
+                        outputs = model_to_eval(images)
                     loss = self.criterion(outputs, labels)
                 
                 total_loss += loss.item()
                 self.val_metrics.update(outputs, labels)
+                
+                # Track per-class accuracy
+                _, preds = outputs.max(1)
+                correct = preds.eq(labels).float()
+                for i in range(labels.size(0)):
+                    class_correct[labels[i]] += correct[i]
+                    class_total[labels[i]] += 1
         
         # Compute metrics
         avg_loss = total_loss / num_batches
         metrics = self.val_metrics.compute()
         
+        # Add critical class performance
+        critical_metrics = self._log_critical_class_performance(
+            class_correct, class_total, prefix='val'
+        )
+        metrics.update(critical_metrics)
+        
         return avg_loss, metrics
+    
+    def _log_critical_class_performance(
+        self, 
+        class_correct: torch.Tensor, 
+        class_total: torch.Tensor,
+        prefix: str = 'val'
+    ) -> Dict[str, float]:
+        """Log performance for critical and minority classes"""
+        metrics = {}
+        
+        # Log critical conditions
+        logger.info(f"\n{prefix.upper()} - Critical Conditions Performance:")
+        for condition, indices in self.critical_class_indices.items():
+            condition_correct = sum(class_correct[idx] for idx in indices if idx < len(class_correct))
+            condition_total = sum(class_total[idx] for idx in indices if idx < len(class_total))
+            
+            if condition_total > 0:
+                accuracy = (condition_correct / condition_total).item()
+                sensitivity_target = CRITICAL_CONDITIONS[condition]['min_sensitivity']
+                
+                logger.info(
+                    f"  {condition}: {accuracy:.3f} "
+                    f"(target: {sensitivity_target:.3f}) "
+                    f"[{int(condition_correct)}/{int(condition_total)}]"
+                )
+                
+                metrics[f'{prefix}_{condition}_acc'] = accuracy
+                
+                # Alert if below target
+                if accuracy < sensitivity_target:
+                    logger.warning(
+                        f"  ⚠️ {condition} below target sensitivity! "
+                        f"{accuracy:.3f} < {sensitivity_target:.3f}"
+                    )
+        
+        # Log minority classes
+        logger.info(f"\n{prefix.upper()} - Minority Classes Performance:")
+        for class_name, idx in self.minority_class_indices.items():
+            if idx < len(class_correct) and class_total[idx] > 0:
+                accuracy = (class_correct[idx] / class_total[idx]).item()
+                logger.info(
+                    f"  {class_name}: {accuracy:.3f} "
+                    f"[{int(class_correct[idx])}/{int(class_total[idx])}]"
+                )
+                metrics[f'{prefix}_{class_name}_acc'] = accuracy
+        
+        return metrics
     
     def predict(self, dataloader: DataLoader) -> Tuple[torch.Tensor, torch.Tensor]:
         """Make predictions on a dataset"""
@@ -535,10 +754,15 @@ class RETFoundTrainer(BaseTrainer):
         all_labels = []
         
         with torch.no_grad():
-            for images, labels in tqdm(dataloader, desc="Prediction"):
+            for batch in tqdm(dataloader, desc="Prediction"):
+                if len(batch) == 2:
+                    images, labels = batch
+                else:
+                    images, labels, _ = batch
+                
                 images = images.to(self.device, non_blocking=True)
                 
-                with autocast(enabled=self.config.use_amp, dtype=self.config.amp_dtype):
+                with autocast(enabled=self.scaler is not None, dtype=self.amp_dtype):
                     outputs = model_to_eval(images)
                 
                 preds = outputs.argmax(dim=1)
@@ -546,6 +770,31 @@ class RETFoundTrainer(BaseTrainer):
                 all_labels.append(labels)
         
         return torch.cat(all_preds), torch.cat(all_labels)
+    
+    def get_learning_rate(self) -> float:
+        """Get current learning rate"""
+        return self.optimizer.param_groups[0]['lr']
+    
+    def log_summary(self):
+        """Log training summary with focus on v6.1 metrics"""
+        logger.info("\n" + "="*60)
+        logger.info("TRAINING SUMMARY - Dataset v6.1")
+        logger.info("="*60)
+        
+        # Best metrics
+        logger.info(f"Best epoch: {self.best_epoch}")
+        logger.info(f"Best metric: {self.best_metric:.4f}")
+        
+        # Final performance on critical conditions
+        if 'val_RAO_acc' in self.history:
+            logger.info("\nFinal Critical Conditions Performance:")
+            for condition in self.critical_class_indices.keys():
+                key = f'val_{condition}_acc'
+                if key in self.history and self.history[key]:
+                    final_acc = self.history[key][-1]
+                    logger.info(f"  {condition}: {final_acc:.3f}")
+        
+        logger.info("="*60)
 
 
 def create_trainer(

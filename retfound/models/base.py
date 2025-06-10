@@ -1,11 +1,12 @@
-"""Base model class for RETFound Training Framework."""
+"""Base model class for RETFound Training Framework - Enhanced for v6.1."""
 
 from abc import ABC, abstractmethod
-from typing import Dict, Any, Optional, Tuple
+from typing import Dict, Any, Optional, Tuple, List, Union
 import torch
 import torch.nn as nn
 from pathlib import Path
 import logging
+from datetime import datetime
 
 from retfound.core.exceptions import ModelError
 
@@ -16,7 +17,7 @@ class BaseModel(nn.Module, ABC):
     """Abstract base class for all models in the framework.
     
     This class defines the interface that all models must implement
-    and provides common functionality.
+    and provides common functionality, with enhanced support for v6.1.
     """
     
     def __init__(self, config: Any):
@@ -29,6 +30,12 @@ class BaseModel(nn.Module, ABC):
         self.config = config
         self._is_built = False
         self._device = None
+        self._metadata = {}  # For storing model metadata
+        
+        # V6.1 specific attributes
+        self._dataset_version = None
+        self._modality = None
+        self._unified_classes = False
         
     @abstractmethod
     def build(self) -> None:
@@ -40,14 +47,15 @@ class BaseModel(nn.Module, ABC):
         pass
     
     @abstractmethod
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
+    def forward(self, x: torch.Tensor, **kwargs) -> Union[torch.Tensor, Dict[str, torch.Tensor]]:
         """Forward pass of the model.
         
         Args:
             x: Input tensor
+            **kwargs: Additional arguments (e.g., modality hint for v6.1)
             
         Returns:
-            Output tensor
+            Output tensor or dictionary of outputs
         """
         pass
     
@@ -103,6 +111,18 @@ class BaseModel(nn.Module, ABC):
         else:
             state_dict = checkpoint
         
+        # Extract metadata if available (v6.1 support)
+        if 'metadata' in checkpoint:
+            self._metadata = checkpoint['metadata']
+            self._dataset_version = self._metadata.get('dataset_version')
+            self._modality = self._metadata.get('modality')
+            self._unified_classes = self._metadata.get('unified_classes', False)
+            
+            logger.info(f"Loaded checkpoint metadata:")
+            logger.info(f"  - Dataset version: {self._dataset_version}")
+            logger.info(f"  - Modality: {self._modality}")
+            logger.info(f"  - Unified classes: {self._unified_classes}")
+        
         # Load weights
         msg = self.load_state_dict(state_dict, strict=strict)
         
@@ -113,8 +133,51 @@ class BaseModel(nn.Module, ABC):
             'missing_keys': msg.missing_keys,
             'unexpected_keys': msg.unexpected_keys,
             'checkpoint_info': {k: v for k, v in checkpoint.items() 
-                               if k not in ['model_state_dict', 'state_dict', 'model']}
+                               if k not in ['model_state_dict', 'state_dict', 'model']},
+            'metadata': self._metadata
         }
+    
+    def save_checkpoint(
+        self,
+        save_path: Path,
+        optimizer_state: Optional[Dict] = None,
+        scheduler_state: Optional[Dict] = None,
+        epoch: Optional[int] = None,
+        **kwargs
+    ) -> None:
+        """Save model checkpoint with metadata.
+        
+        Args:
+            save_path: Path to save checkpoint
+            optimizer_state: Optimizer state dict
+            scheduler_state: Scheduler state dict
+            epoch: Current epoch
+            **kwargs: Additional items to save
+        """
+        checkpoint = {
+            'model_state_dict': self.state_dict(),
+            'config': self.config,
+            'metadata': self.get_metadata(),
+            'timestamp': datetime.now().isoformat(),
+        }
+        
+        if optimizer_state is not None:
+            checkpoint['optimizer_state_dict'] = optimizer_state
+        
+        if scheduler_state is not None:
+            checkpoint['scheduler_state_dict'] = scheduler_state
+        
+        if epoch is not None:
+            checkpoint['epoch'] = epoch
+        
+        # Add any additional items
+        checkpoint.update(kwargs)
+        
+        # Save checkpoint
+        save_path.parent.mkdir(parents=True, exist_ok=True)
+        torch.save(checkpoint, save_path)
+        
+        logger.info(f"Saved checkpoint to {save_path}")
     
     def freeze_backbone(self) -> None:
         """Freeze backbone parameters for fine-tuning.
@@ -151,7 +214,7 @@ class BaseModel(nn.Module, ABC):
             return sum(p.numel() for p in self.parameters() if p.requires_grad)
         return sum(p.numel() for p in self.parameters())
     
-    def get_layer_groups(self, num_groups: int = 4) -> list[list[nn.Module]]:
+    def get_layer_groups(self, num_groups: int = 4) -> List[List[nn.Module]]:
         """Get layer groups for differential learning rates.
         
         Args:
@@ -199,7 +262,7 @@ class BaseModel(nn.Module, ABC):
         base_lr: float,
         weight_decay: float = 0.0,
         layer_decay: Optional[float] = None
-    ) -> list[dict]:
+    ) -> List[Dict]:
         """Get parameter groups for optimizer with optional layer-wise decay.
         
         Args:
@@ -263,6 +326,72 @@ class BaseModel(nn.Module, ABC):
         except StopIteration:
             return None
     
+    # V6.1 specific methods
+    def get_metadata(self) -> Dict[str, Any]:
+        """Get model metadata including v6.1 specific information.
+        
+        Returns:
+            Dictionary containing model metadata
+        """
+        metadata = {
+            'model_class': self.__class__.__name__,
+            'num_parameters': self.get_num_params(),
+            'trainable_parameters': self.get_num_params(trainable_only=True),
+        }
+        
+        # Add config info if available
+        if hasattr(self.config, 'model'):
+            metadata.update({
+                'architecture': getattr(self.config.model, 'type', 'unknown'),
+                'num_classes': getattr(self.config.model, 'num_classes', 'unknown'),
+            })
+        
+        # Add v6.1 specific metadata
+        if self._dataset_version:
+            metadata['dataset_version'] = self._dataset_version
+        if self._modality:
+            metadata['modality'] = self._modality
+        if self._unified_classes:
+            metadata['unified_classes'] = self._unified_classes
+        
+        # Merge with any custom metadata
+        metadata.update(self._metadata)
+        
+        return metadata
+    
+    def set_metadata(self, key: str, value: Any) -> None:
+        """Set custom metadata value.
+        
+        Args:
+            key: Metadata key
+            value: Metadata value
+        """
+        self._metadata[key] = value
+    
+    @property
+    def is_v61_model(self) -> bool:
+        """Check if this is a v6.1 model.
+        
+        Returns:
+            True if model is configured for v6.1
+        """
+        return (
+            self._dataset_version == 'v6.1' or
+            (hasattr(self.config, 'model') and 
+             getattr(self.config.model, 'num_classes', 0) == 28)
+        )
+    
+    def get_class_names(self) -> Optional[List[str]]:
+        """Get class names if available.
+        
+        Returns:
+            List of class names or None
+            
+        Note:
+            Should be overridden by subclasses that have class name information
+        """
+        return None
+    
     def summary(self, input_shape: Optional[Tuple[int, ...]] = None) -> str:
         """Get model summary.
         
@@ -276,15 +405,44 @@ class BaseModel(nn.Module, ABC):
         trainable_params = self.get_num_params(trainable_only=True)
         
         summary = [
+            f"{'='*60}",
             f"Model: {self.__class__.__name__}",
+            f"{'='*60}",
             f"Total parameters: {total_params:,}",
             f"Trainable parameters: {trainable_params:,}",
             f"Non-trainable parameters: {total_params - trainable_params:,}",
+            f"Memory footprint: ~{total_params * 4 / 1024**2:.1f} MB (float32)",
         ]
         
         if hasattr(self.config, 'model'):
-            summary.append(f"Architecture: {self.config.model.type}")
-            summary.append(f"Number of classes: {self.config.model.num_classes}")
+            summary.extend([
+                f"{'─'*60}",
+                f"Architecture: {self.config.model.type}",
+                f"Number of classes: {self.config.model.num_classes}",
+            ])
+        
+        # Add v6.1 specific information
+        if self.is_v61_model:
+            summary.extend([
+                f"{'─'*60}",
+                f"Dataset version: v6.1",
+                f"Unified classes: {self._unified_classes}",
+                f"Modality: {self._modality or 'not specified'}",
+            ])
+        
+        # Add metadata if available
+        if self._metadata:
+            summary.extend([
+                f"{'─'*60}",
+                "Additional metadata:",
+            ])
+            for key, value in self._metadata.items():
+                if key not in ['model_class', 'num_parameters', 'trainable_parameters',
+                              'architecture', 'num_classes', 'dataset_version', 
+                              'modality', 'unified_classes']:
+                    summary.append(f"  {key}: {value}")
+        
+        summary.append(f"{'='*60}")
         
         return "\n".join(summary)
     

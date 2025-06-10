@@ -1,444 +1,539 @@
 """
-Model Exporter
-=============
-
-Main module for exporting trained models to various formats.
+Model export utilities for RETFound.
+Supports exporting models trained on v6.1 dataset with proper metadata.
 """
 
-import logging
-from enum import Enum
-from pathlib import Path
-from typing import Dict, Any, Optional, List, Union, Tuple
-from dataclasses import dataclass, field
 import json
+import os
+from pathlib import Path
+from typing import Dict, List, Optional, Union
+
 import torch
 import torch.nn as nn
+from torch.jit import script
 
-from .onnx import ONNXExporter
-from .torchscript import TorchScriptExporter
-from .inference import create_inference_script
+from ..core.constants import DATASET_V61_CLASSES, DATASET_V40_CLASSES
+from ..core.exceptions import ExportError
+from ..models import load_model
+from ..utils.device import get_device
+from ..utils.logging import get_logger
 
-logger = logging.getLogger(__name__)
-
-# Try to import TensorRT
-try:
-    from .tensorrt import TensorRTExporter
-    TENSORRT_AVAILABLE = True
-except ImportError:
-    TENSORRT_AVAILABLE = False
-    logger.warning("TensorRT not available")
+logger = get_logger(__name__)
 
 
-class ExportFormat(Enum):
-    """Supported export formats"""
-    PYTORCH = "pytorch"
-    TORCHSCRIPT = "torchscript"
-    ONNX = "onnx"
-    TENSORRT = "tensorrt"
-    ALL = "all"
-
-
-@dataclass
-class ExportConfig:
-    """Configuration for model export"""
+class RETFoundExporter:
+    """Export RETFound models to various formats."""
     
-    # Export settings
-    formats: List[ExportFormat] = field(default_factory=lambda: [ExportFormat.PYTORCH])
-    output_dir: Path = Path("exports")
-    model_name: str = "model"
-    
-    # Input configuration
-    input_shape: Tuple[int, ...] = (3, 224, 224)
-    batch_size: int = 1
-    dynamic_batch: bool = True
-    
-    # Optimization settings
-    optimize: bool = True
-    quantize: bool = False
-    fp16: bool = False
-    
-    # ONNX specific
-    onnx_opset: int = 14
-    onnx_simplify: bool = True
-    
-    # TorchScript specific
-    torchscript_trace: bool = True  # Use tracing instead of scripting
-    
-    # TensorRT specific
-    trt_fp16: bool = True
-    trt_int8: bool = False
-    trt_workspace_size: int = 1 << 30  # 1GB
-    trt_max_batch_size: int = 32
-    
-    # Metadata
-    include_metadata: bool = True
-    metadata: Dict[str, Any] = field(default_factory=dict)
-    
-    # Validation
-    verify_outputs: bool = True
-    tolerance: float = 1e-5
-    
-    # Additional files
-    create_inference_script: bool = True
-    create_requirements: bool = True
-    create_readme: bool = True
-
-
-class ModelExporter:
-    """
-    Main class for exporting models to various formats
-    """
-    
-    def __init__(self, config: ExportConfig):
+    def __init__(
+        self,
+        checkpoint_path: str,
+        output_dir: Optional[str] = None,
+        device: Optional[torch.device] = None
+    ):
         """
-        Initialize exporter
+        Initialize model exporter.
         
         Args:
-            config: Export configuration
+            checkpoint_path: Path to model checkpoint
+            output_dir: Directory to save exported models
+            device: Device to use for export
         """
-        self.config = config
-        self.exported_files = {}
+        self.checkpoint_path = Path(checkpoint_path)
+        self.output_dir = Path(output_dir) if output_dir else self.checkpoint_path.parent / "export"
+        self.device = device or get_device()
         
         # Create output directory
-        self.config.output_dir = Path(self.config.output_dir)
-        self.config.output_dir.mkdir(parents=True, exist_ok=True)
+        self.output_dir.mkdir(parents=True, exist_ok=True)
         
-        # Initialize exporters
-        self.exporters = {
-            ExportFormat.TORCHSCRIPT: TorchScriptExporter(config),
-            ExportFormat.ONNX: ONNXExporter(config)
-        }
+        # Load model and metadata
+        self.model, self.config, self.metadata = self._load_model_and_metadata()
         
-        if TENSORRT_AVAILABLE:
-            self.exporters[ExportFormat.TENSORRT] = TensorRTExporter(config)
+        # Detect dataset version
+        self.dataset_version = self._detect_dataset_version()
+        
+        logger.info(f"Initialized exporter for {self.dataset_version} model")
+    
+    def _load_model_and_metadata(self) -> tuple:
+        """Load model, config, and metadata from checkpoint."""
+        try:
+            # Load checkpoint
+            checkpoint = torch.load(self.checkpoint_path, map_location='cpu')
+            
+            # Extract config
+            config = checkpoint.get('config', {})
+            
+            # Extract metadata
+            metadata = checkpoint.get('metadata', {})
+            
+            # Load model
+            model = load_model(
+                config=config,
+                checkpoint_path=self.checkpoint_path,
+                device=self.device
+            )
+            
+            # Ensure model is in eval mode
+            model.eval()
+            
+            return model, config, metadata
+            
+        except Exception as e:
+            raise ExportError(f"Failed to load model: {str(e)}")
+    
+    def _detect_dataset_version(self) -> str:
+        """Detect dataset version from model configuration."""
+        # Check metadata first
+        if 'dataset_version' in self.metadata:
+            return self.metadata['dataset_version']
+        
+        # Check config
+        if 'dataset_version' in self.config.get('data', {}):
+            return self.config['data']['dataset_version']
+        
+        # Infer from number of classes
+        num_classes = getattr(self.model, 'num_classes', None)
+        if num_classes == 28:
+            logger.info("Detected 28 classes, assuming v6.1 dataset")
+            return "v6.1"
+        elif num_classes == 22:
+            logger.info("Detected 22 classes, assuming v4.0 dataset")
+            return "v4.0"
+        else:
+            logger.warning("Could not detect dataset version, defaulting to v6.1")
+            return "v6.1"
     
     def export(
         self,
-        model: nn.Module,
-        checkpoint_path: Optional[Union[str, Path]] = None,
-        example_input: Optional[torch.Tensor] = None
+        formats: Union[str, List[str]] = ["onnx", "torchscript"],
+        optimize: bool = True,
+        quantize: Optional[str] = None,
+        input_shape: tuple = (1, 3, 224, 224),
+        opset_version: int = 11,
+        include_metadata: bool = True
     ) -> Dict[str, Path]:
         """
-        Export model to specified formats
+        Export model to specified formats.
         
         Args:
-            model: Model to export
-            checkpoint_path: Optional checkpoint to load
-            example_input: Example input tensor
+            formats: Export format(s) - "onnx", "torchscript", "tensorrt"
+            optimize: Whether to optimize the exported model
+            quantize: Quantization mode - "int8", "fp16", or None
+            input_shape: Input tensor shape for export
+            opset_version: ONNX opset version
+            include_metadata: Whether to include metadata in export
             
         Returns:
-            Dictionary of format to exported file path
+            Dictionary mapping format to exported file path
         """
-        logger.info(f"Starting model export to {self.config.output_dir}")
+        if isinstance(formats, str):
+            formats = [formats]
         
-        # Load checkpoint if provided
-        if checkpoint_path:
-            self._load_checkpoint(model, checkpoint_path)
+        exported_paths = {}
         
-        # Prepare model
-        model.eval()
-        device = next(model.parameters()).device
+        for format_name in formats:
+            logger.info(f"Exporting to {format_name} format...")
+            
+            if format_name.lower() == "onnx":
+                path = self._export_onnx(
+                    input_shape=input_shape,
+                    opset_version=opset_version,
+                    optimize=optimize,
+                    quantize=quantize,
+                    include_metadata=include_metadata
+                )
+            elif format_name.lower() == "torchscript":
+                path = self._export_torchscript(
+                    input_shape=input_shape,
+                    optimize=optimize,
+                    quantize=quantize,
+                    include_metadata=include_metadata
+                )
+            elif format_name.lower() == "tensorrt":
+                path = self._export_tensorrt(
+                    input_shape=input_shape,
+                    optimize=optimize,
+                    precision=quantize or "fp32",
+                    include_metadata=include_metadata
+                )
+            else:
+                logger.warning(f"Unsupported format: {format_name}")
+                continue
+            
+            exported_paths[format_name] = path
+            logger.info(f"Successfully exported to {path}")
         
-        # Create example input if not provided
-        if example_input is None:
-            example_input = self._create_example_input(device)
+        # Save metadata separately
+        if include_metadata:
+            self._save_metadata(exported_paths)
         
-        # Export to each format
-        if ExportFormat.ALL in self.config.formats:
-            formats = [f for f in ExportFormat if f != ExportFormat.ALL]
-        else:
-            formats = self.config.formats
-        
-        for format in formats:
-            try:
-                if format == ExportFormat.PYTORCH:
-                    self._export_pytorch(model)
-                else:
-                    if format in self.exporters:
-                        output_path = self.exporters[format].export(model, example_input)
-                        self.exported_files[format] = output_path
-                    else:
-                        logger.warning(f"Exporter for {format} not available")
-                        
-            except Exception as e:
-                logger.error(f"Failed to export to {format}: {e}")
-                if hasattr(self.config, 'raise_on_error') and self.config.raise_on_error:
-                    raise
-        
-        # Verify exports
-        if self.config.verify_outputs:
-            self._verify_exports(model, example_input)
-        
-        # Create additional files
-        if self.config.create_inference_script:
-            self._create_inference_script()
-        
-        if self.config.create_requirements:
-            self._create_requirements()
-        
-        if self.config.create_readme:
-            self._create_readme()
-        
-        # Save metadata
-        if self.config.include_metadata:
-            self._save_metadata()
-        
-        logger.info(f"Export completed. Files saved to {self.config.output_dir}")
-        
-        return self.exported_files
+        return exported_paths
     
-    def _load_checkpoint(self, model: nn.Module, checkpoint_path: Union[str, Path]) -> None:
-        """Load model checkpoint"""
-        checkpoint_path = Path(checkpoint_path)
+    def _export_onnx(
+        self,
+        input_shape: tuple,
+        opset_version: int,
+        optimize: bool,
+        quantize: Optional[str],
+        include_metadata: bool
+    ) -> Path:
+        """Export model to ONNX format."""
+        try:
+            import onnx
+            import onnxruntime as ort
+        except ImportError:
+            raise ExportError("ONNX export requires onnx and onnxruntime packages")
         
-        if not checkpoint_path.exists():
-            raise FileNotFoundError(f"Checkpoint not found: {checkpoint_path}")
+        # Create dummy input
+        dummy_input = torch.randn(input_shape).to(self.device)
         
-        logger.info(f"Loading checkpoint from {checkpoint_path}")
+        # Define output path
+        output_path = self.output_dir / "model.onnx"
         
-        checkpoint = torch.load(checkpoint_path, map_location='cpu')
+        # Export to ONNX
+        with torch.no_grad():
+            torch.onnx.export(
+                self.model,
+                dummy_input,
+                str(output_path),
+                opset_version=opset_version,
+                input_names=['input'],
+                output_names=['output'],
+                dynamic_axes={
+                    'input': {0: 'batch_size'},
+                    'output': {0: 'batch_size'}
+                },
+                do_constant_folding=optimize,
+                export_params=True,
+                verbose=False
+            )
         
-        # Handle different checkpoint formats
-        if 'model_state_dict' in checkpoint:
-            state_dict = checkpoint['model_state_dict']
-        elif 'state_dict' in checkpoint:
-            state_dict = checkpoint['state_dict']
-        elif 'model' in checkpoint:
-            state_dict = checkpoint['model']
-        else:
-            state_dict = checkpoint
+        # Add metadata to ONNX model
+        if include_metadata:
+            onnx_model = onnx.load(str(output_path))
+            
+            # Add metadata
+            metadata_props = []
+            
+            # Dataset version and classes
+            metadata_props.append(
+                onnx.StringStringEntryProto(key='dataset_version', value=self.dataset_version)
+            )
+            metadata_props.append(
+                onnx.StringStringEntryProto(key='num_classes', value=str(self.model.num_classes))
+            )
+            
+            # Class names
+            if self.dataset_version == "v6.1":
+                class_names = DATASET_V61_CLASSES
+            else:
+                class_names = DATASET_V40_CLASSES
+            
+            metadata_props.append(
+                onnx.StringStringEntryProto(key='class_names', value=json.dumps(class_names))
+            )
+            
+            # Model metadata
+            if self.metadata:
+                for key, value in self.metadata.items():
+                    if isinstance(value, (str, int, float, bool)):
+                        metadata_props.append(
+                            onnx.StringStringEntryProto(key=f'model_{key}', value=str(value))
+                        )
+            
+            # Add to model
+            onnx_model.metadata_props.extend(metadata_props)
+            
+            # Save updated model
+            onnx.save(onnx_model, str(output_path))
         
-        model.load_state_dict(state_dict)
+        # Optimize if requested
+        if optimize:
+            self._optimize_onnx(output_path)
         
-        # Extract metadata if available
-        if isinstance(checkpoint, dict):
-            self.config.metadata.update({
-                'checkpoint_path': str(checkpoint_path),
-                'epoch': checkpoint.get('epoch', 'unknown'),
-                'best_metric': checkpoint.get('best_metric', 'unknown')
-            })
-    
-    def _export_pytorch(self, model: nn.Module) -> Path:
-        """Export PyTorch model with metadata"""
-        output_path = self.config.output_dir / f"{self.config.model_name}_pytorch.pth"
+        # Quantize if requested
+        if quantize:
+            output_path = self._quantize_onnx(output_path, quantize)
         
-        logger.info(f"Exporting PyTorch model to {output_path}")
-        
-        # Prepare checkpoint
-        checkpoint = {
-            'model_state_dict': model.state_dict(),
-            'model_config': self.config.metadata.get('model_config', {}),
-            'export_config': {
-                'input_shape': self.config.input_shape,
-                'batch_size': self.config.batch_size,
-                'dynamic_batch': self.config.dynamic_batch
-            },
-            'metadata': self.config.metadata
-        }
-        
-        # Add model architecture if possible
-        if hasattr(model, 'config'):
-            checkpoint['model_config'] = model.config
-        
-        torch.save(checkpoint, output_path)
-        
-        self.exported_files[ExportFormat.PYTORCH] = output_path
+        # Validate exported model
+        self._validate_onnx(output_path, input_shape)
         
         return output_path
     
-    def _create_example_input(self, device: torch.device) -> torch.Tensor:
-        """Create example input tensor"""
-        shape = (self.config.batch_size, *self.config.input_shape)
-        return torch.randn(shape, device=device)
-    
-    def _verify_exports(self, original_model: nn.Module, example_input: torch.Tensor) -> None:
-        """Verify exported models produce same outputs"""
-        logger.info("Verifying exported models...")
+    def _export_torchscript(
+        self,
+        input_shape: tuple,
+        optimize: bool,
+        quantize: Optional[str],
+        include_metadata: bool
+    ) -> Path:
+        """Export model to TorchScript format."""
+        # Create dummy input
+        dummy_input = torch.randn(input_shape).to(self.device)
         
+        # Define output path
+        output_path = self.output_dir / "model.pt"
+        
+        # Convert to TorchScript
         with torch.no_grad():
-            original_output = original_model(example_input)
-        
-        for format, exporter in self.exporters.items():
-            if format not in self.exported_files:
-                continue
+            # Try to script first, fall back to trace
+            try:
+                scripted_model = torch.jit.script(self.model)
+            except:
+                logger.warning("Scripting failed, falling back to tracing")
+                scripted_model = torch.jit.trace(self.model, dummy_input)
             
-            if hasattr(exporter, 'verify'):
-                try:
-                    is_valid = exporter.verify(
-                        self.exported_files[format],
-                        example_input,
-                        original_output,
-                        tolerance=self.config.tolerance
+            # Optimize if requested
+            if optimize:
+                scripted_model = torch.jit.optimize_for_inference(scripted_model)
+            
+            # Add metadata as attributes
+            if include_metadata:
+                # Dataset info
+                scripted_model.dataset_version = self.dataset_version
+                scripted_model.num_classes = self.model.num_classes
+                
+                # Class names
+                if self.dataset_version == "v6.1":
+                    scripted_model.class_names = DATASET_V61_CLASSES
+                else:
+                    scripted_model.class_names = DATASET_V40_CLASSES
+                
+                # Additional metadata
+                if hasattr(self.model, 'modality'):
+                    scripted_model.modality = self.model.modality
+            
+            # Quantize if requested
+            if quantize:
+                if quantize == "int8":
+                    scripted_model = torch.quantization.quantize_dynamic(
+                        scripted_model,
+                        {torch.nn.Linear},
+                        dtype=torch.qint8
                     )
-                    
-                    if is_valid:
-                        logger.info(f"{format} export verified ✓")
-                    else:
-                        logger.warning(f"{format} export verification failed")
-                        
-                except Exception as e:
-                    logger.error(f"Failed to verify {format}: {e}")
+                elif quantize == "fp16":
+                    scripted_model = scripted_model.half()
+            
+            # Save model
+            torch.jit.save(scripted_model, str(output_path))
+        
+        # Validate exported model
+        self._validate_torchscript(output_path, input_shape)
+        
+        return output_path
     
-    def _create_inference_script(self) -> None:
-        """Create standalone inference script"""
-        script_path = self.config.output_dir / "inference.py"
+    def _export_tensorrt(
+        self,
+        input_shape: tuple,
+        optimize: bool,
+        precision: str,
+        include_metadata: bool
+    ) -> Path:
+        """Export model to TensorRT format."""
+        try:
+            import tensorrt as trt
+            import torch2trt
+        except ImportError:
+            raise ExportError("TensorRT export requires tensorrt and torch2trt packages")
         
-        # Get available formats
-        available_formats = list(self.exported_files.keys())
+        # Create dummy input
+        dummy_input = torch.randn(input_shape).to(self.device)
         
-        script_content = create_inference_script(
-            model_name=self.config.model_name,
-            input_shape=self.config.input_shape,
-            available_formats=available_formats,
-            metadata=self.config.metadata
+        # Define output path
+        output_path = self.output_dir / "model.trt"
+        
+        # Convert precision string to torch2trt format
+        precision_map = {
+            "fp32": None,
+            "fp16": torch.float16,
+            "int8": torch.int8
+        }
+        trt_precision = precision_map.get(precision, None)
+        
+        # Convert to TensorRT
+        with torch.no_grad():
+            trt_model = torch2trt.torch2trt(
+                self.model,
+                [dummy_input],
+                fp16_mode=(trt_precision == torch.float16),
+                int8_mode=(trt_precision == torch.int8),
+                optimize=optimize,
+                max_workspace_size=1 << 30  # 1GB
+            )
+        
+        # Save engine
+        with open(output_path, 'wb') as f:
+            f.write(trt_model.engine.serialize())
+        
+        # Save metadata separately for TensorRT
+        if include_metadata:
+            metadata_path = output_path.with_suffix('.json')
+            metadata = {
+                'dataset_version': self.dataset_version,
+                'num_classes': self.model.num_classes,
+                'class_names': DATASET_V61_CLASSES if self.dataset_version == "v6.1" else DATASET_V40_CLASSES,
+                'input_shape': list(input_shape),
+                'precision': precision,
+                'model_metadata': self.metadata
+            }
+            with open(metadata_path, 'w') as f:
+                json.dump(metadata, f, indent=2)
+        
+        return output_path
+    
+    def _optimize_onnx(self, model_path: Path):
+        """Optimize ONNX model."""
+        try:
+            from onnxruntime.transformers import optimizer
+        except ImportError:
+            logger.warning("ONNX optimization requires onnxruntime.transformers")
+            return
+        
+        # Run optimization
+        optimized_path = model_path.with_name("model_optimized.onnx")
+        optimizer.optimize_model(
+            str(model_path),
+            str(optimized_path),
+            optimization_level=99
         )
         
-        with open(script_path, 'w') as f:
-            f.write(script_content)
-        
-        # Make executable
-        script_path.chmod(0o755)
-        
-        logger.info(f"Created inference script: {script_path}")
+        # Replace original with optimized
+        optimized_path.replace(model_path)
     
-    def _create_requirements(self) -> None:
-        """Create requirements.txt for inference"""
-        requirements = [
-            "torch>=2.0.0",
-            "torchvision>=0.15.0",
-            "numpy>=1.21.0",
-            "Pillow>=9.0.0"
-        ]
+    def _quantize_onnx(self, model_path: Path, quantize: str) -> Path:
+        """Quantize ONNX model."""
+        try:
+            from onnxruntime.quantization import quantize_dynamic, QuantType
+        except ImportError:
+            logger.warning("ONNX quantization requires onnxruntime.quantization")
+            return model_path
         
-        if ExportFormat.ONNX in self.exported_files:
-            requirements.extend([
-                "onnx>=1.13.0",
-                "onnxruntime>=1.14.0"
-            ])
+        # Define quantized path
+        quantized_path = model_path.with_name(f"model_{quantize}.onnx")
         
-        if ExportFormat.TENSORRT in self.exported_files:
-            requirements.append("tensorrt>=8.0.0")
+        # Quantize model
+        if quantize == "int8":
+            quantize_dynamic(
+                str(model_path),
+                str(quantized_path),
+                weight_type=QuantType.QInt8
+            )
+        else:
+            logger.warning(f"Unsupported quantization type: {quantize}")
+            return model_path
         
-        req_path = self.config.output_dir / "requirements.txt"
-        
-        with open(req_path, 'w') as f:
-            f.write('\n'.join(requirements))
-        
-        logger.info(f"Created requirements.txt: {req_path}")
+        return quantized_path
     
-    def _create_readme(self) -> None:
-        """Create README with usage instructions"""
-        readme_content = f"""# {self.config.model_name} - Exported Model
-
-## Available Formats
-
-"""
-        for format, path in self.exported_files.items():
-            readme_content += f"- **{format.value}**: `{path.name}`\n"
+    def _validate_onnx(self, model_path: Path, input_shape: tuple):
+        """Validate exported ONNX model."""
+        try:
+            import onnx
+            import onnxruntime as ort
+        except ImportError:
+            logger.warning("Skipping ONNX validation (requires onnxruntime)")
+            return
         
-        readme_content += f"""
-## Usage
-
-### PyTorch
-
-```python
-import torch
-
-# Load model
-checkpoint = torch.load('{self.config.model_name}_pytorch.pth')
-model = YourModelClass()  # Initialize your model
-model.load_state_dict(checkpoint['model_state_dict'])
-model.eval()
-
-# Inference
-with torch.no_grad():
-    output = model(input_tensor)
-```
-
-### Inference Script
-
-```bash
-python inference.py --image path/to/image.jpg --format pytorch
-```
-
-## Model Information
-
-- Input shape: {self.config.input_shape}
-- Batch size: {self.config.batch_size}
-- Dynamic batch: {self.config.dynamic_batch}
-
-## Requirements
-
-See `requirements.txt` for dependencies.
-"""
+        # Check model
+        onnx_model = onnx.load(str(model_path))
+        onnx.checker.check_model(onnx_model)
         
-        readme_path = self.config.output_dir / "README.md"
+        # Test inference
+        ort_session = ort.InferenceSession(str(model_path))
         
-        with open(readme_path, 'w') as f:
-            f.write(readme_content)
+        # Create test input
+        test_input = torch.randn(input_shape).numpy()
         
-        logger.info(f"Created README: {readme_path}")
+        # Run inference
+        input_name = ort_session.get_inputs()[0].name
+        output = ort_session.run(None, {input_name: test_input})
+        
+        # Validate output shape
+        expected_output_shape = (input_shape[0], self.model.num_classes)
+        actual_output_shape = output[0].shape
+        
+        if actual_output_shape != expected_output_shape:
+            raise ExportError(
+                f"Output shape mismatch: expected {expected_output_shape}, "
+                f"got {actual_output_shape}"
+            )
+        
+        logger.info("ONNX model validation passed")
     
-    def _save_metadata(self) -> None:
-        """Save export metadata"""
-        metadata = {
-            'export_config': {
-                'formats': [f.value for f in self.config.formats],
-                'input_shape': self.config.input_shape,
-                'batch_size': self.config.batch_size,
-                'dynamic_batch': self.config.dynamic_batch,
-                'optimize': self.config.optimize,
-                'quantize': self.config.quantize
+    def _validate_torchscript(self, model_path: Path, input_shape: tuple):
+        """Validate exported TorchScript model."""
+        # Load model
+        loaded_model = torch.jit.load(str(model_path))
+        loaded_model.eval()
+        
+        # Create test input
+        test_input = torch.randn(input_shape)
+        
+        # Run inference
+        with torch.no_grad():
+            output = loaded_model(test_input)
+        
+        # Validate output shape
+        expected_output_shape = (input_shape[0], self.model.num_classes)
+        actual_output_shape = tuple(output.shape)
+        
+        if actual_output_shape != expected_output_shape:
+            raise ExportError(
+                f"Output shape mismatch: expected {expected_output_shape}, "
+                f"got {actual_output_shape}"
+            )
+        
+        # Check metadata
+        if hasattr(loaded_model, 'dataset_version'):
+            logger.info(f"Model metadata - Dataset: {loaded_model.dataset_version}, "
+                       f"Classes: {loaded_model.num_classes}")
+        
+        logger.info("TorchScript model validation passed")
+    
+    def _save_metadata(self, exported_paths: Dict[str, Path]):
+        """Save comprehensive metadata file."""
+        metadata_path = self.output_dir / "export_metadata.json"
+        
+        # Compile metadata
+        export_metadata = {
+            'export_info': {
+                'timestamp': str(torch.datetime.datetime.now()),
+                'source_checkpoint': str(self.checkpoint_path),
+                'exported_formats': list(exported_paths.keys()),
+                'exported_files': {fmt: str(path) for fmt, path in exported_paths.items()}
             },
-            'exported_files': {
-                format.value: str(path.name) 
-                for format, path in self.exported_files.items()
+            'model_info': {
+                'dataset_version': self.dataset_version,
+                'num_classes': self.model.num_classes,
+                'class_names': DATASET_V61_CLASSES if self.dataset_version == "v6.1" else DATASET_V40_CLASSES,
+                'model_type': self.config.get('model', {}).get('type', 'unknown'),
+                'input_size': self.config.get('data', {}).get('input_size', 224)
             },
-            'model_metadata': self.config.metadata
+            'training_info': self.metadata,
+            'inference_info': {
+                'preprocessing': {
+                    'resize': 224,
+                    'normalize': {
+                        'mean': [0.485, 0.456, 0.406],
+                        'std': [0.229, 0.224, 0.225]
+                    }
+                },
+                'postprocessing': {
+                    'activation': 'softmax',
+                    'temperature': getattr(self.model, 'temperature', 1.0)
+                }
+            }
         }
         
-        metadata_path = self.config.output_dir / "export_metadata.json"
+        # Add v6.1 specific info
+        if self.dataset_version == "v6.1":
+            export_metadata['model_info']['modality_info'] = {
+                'fundus_classes': list(range(18)),
+                'oct_classes': list(range(18, 28)),
+                'fundus_class_names': DATASET_V61_CLASSES[:18],
+                'oct_class_names': DATASET_V61_CLASSES[18:]
+            }
         
+        # Save metadata
         with open(metadata_path, 'w') as f:
-            json.dump(metadata, f, indent=2)
+            json.dump(export_metadata, f, indent=2)
         
-        logger.info(f"Saved metadata: {metadata_path}")
-
-
-def export_model(
-    model: nn.Module,
-    formats: Union[str, List[str]] = "pytorch",
-    output_dir: str = "exports",
-    **kwargs
-) -> Dict[str, Path]:
-    """
-    Convenience function for model export
-    
-    Args:
-        model: Model to export
-        formats: Export format(s)
-        output_dir: Output directory
-        **kwargs: Additional configuration options
-        
-    Returns:
-        Dictionary of format to exported file path
-    """
-    # Parse formats
-    if isinstance(formats, str):
-        if formats == "all":
-            format_list = [ExportFormat.ALL]
-        else:
-            format_list = [ExportFormat(formats)]
-    else:
-        format_list = [ExportFormat(f) for f in formats]
-    
-    # Create config
-    config = ExportConfig(
-        formats=format_list,
-        output_dir=Path(output_dir),
-        **kwargs
-    )
-    
-    # Export
-    exporter = ModelExporter(config)
-    return exporter.export(model)
+        logger.info(f"Saved export metadata to {metadata_path}")

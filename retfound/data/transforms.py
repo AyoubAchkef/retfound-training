@@ -4,6 +4,7 @@ Transform Functions for RETFound
 
 Implements advanced image transformations including pathology-specific
 augmentations, MixUp/CutMix, and test-time augmentation.
+Updated for dataset v6.1 with specific handling for minority classes.
 """
 
 import logging
@@ -37,11 +38,12 @@ logger = logging.getLogger(__name__)
 
 
 class PathologyAugmentation:
-    """Augmentations specific to retinal pathologies"""
+    """Augmentations specific to retinal pathologies - Dataset v6.1"""
     
     def __init__(self, input_size: int = 224):
         """
         Initialize pathology-specific augmentations
+        Updated for dataset v6.1 minority classes
         
         Args:
             input_size: Input image size
@@ -96,8 +98,8 @@ class PathologyAugmentation:
                 A.RandomGamma(gamma_limit=(80, 120), p=0.5),
             ]),
             
-            # Hemorrhages/Occlusions - enhance red channel
-            'hemorrhage': A.Compose([
+            # Hemorrhages/Occlusions for Fundus - enhance red channel
+            'hemorrhage_fundus': A.Compose([
                 A.ChannelShuffle(p=0.3),
                 A.HueSaturationValue(
                     hue_shift_limit=10, 
@@ -111,12 +113,82 @@ class PathologyAugmentation:
                     b_shift_limit=10, 
                     p=0.5
                 ),
-            ])
+            ]),
+            
+            # ERM (Epiretinal Membrane) - v6.1 minority class (0.4%)
+            'erm': A.Compose([
+                A.RandomRotate90(p=0.5),
+                A.RandomBrightnessContrast(
+                    brightness_limit=0.1, 
+                    contrast_limit=0.2, 
+                    p=0.6
+                ),
+                A.GaussianBlur(blur_limit=(3, 5), p=0.2),
+                A.ShiftScaleRotate(
+                    shift_limit=0.05, 
+                    scale_limit=0.1, 
+                    rotate_limit=10, 
+                    p=0.4
+                ),
+            ]),
+            
+            # Myopia Degenerative - v6.1 minority class (1.3%)
+            'myopia_degenerative': A.Compose([
+                A.RandomCrop(
+                    height=int(input_size*0.9), 
+                    width=int(input_size*0.9), 
+                    p=0.4
+                ),
+                A.Resize(input_size, input_size),
+                A.CLAHE(clip_limit=3.0, tile_grid_size=(8, 8), p=0.5),
+                A.ElasticTransform(
+                    alpha=50, sigma=5, alpha_affine=5, p=0.3
+                ),
+                A.RandomBrightnessContrast(
+                    brightness_limit=0.15, contrast_limit=0.2, p=0.5
+                ),
+            ]),
+            
+            # OCT vascular occlusions (RVO/RAO) - v6.1 minority classes
+            'vascular_oct': A.Compose([
+                A.RandomGamma(gamma_limit=(90, 110), p=0.5),
+                A.CLAHE(clip_limit=2.0, tile_grid_size=(4, 4), p=0.4),
+                A.MedianBlur(blur_limit=3, p=0.2),
+                A.RandomContrast(limit=0.2, p=0.5),
+            ]),
+            
+            # CSR (Central Serous Retinopathy) - fluid accumulation
+            'csr': A.Compose([
+                A.RandomBrightnessContrast(
+                    brightness_limit=0.2, contrast_limit=0.3, p=0.6
+                ),
+                A.GaussianBlur(blur_limit=(3, 5), p=0.3),
+                A.ElasticTransform(
+                    alpha=60, sigma=5, alpha_affine=5, p=0.3
+                ),
+            ]),
+            
+            # Retinal Detachment - severe geometric distortion
+            'retinal_detachment': A.Compose([
+                A.ElasticTransform(
+                    alpha=150, sigma=8, alpha_affine=8, p=0.6
+                ),
+                A.RandomShadow(
+                    shadow_roi=(0, 0.5, 1, 1), 
+                    num_shadows_lower=1, 
+                    num_shadows_upper=2, 
+                    p=0.3
+                ),
+                A.RandomBrightnessContrast(
+                    brightness_limit=0.2, contrast_limit=0.3, p=0.5
+                ),
+            ]),
         }
     
     def get_augmentation(self, label_name: str) -> Optional[Callable]:
         """
         Get augmentation based on pathology type
+        Updated for dataset v6.1 with all 28 classes
         
         Args:
             label_name: Name of the class/label
@@ -129,18 +201,97 @@ class PathologyAugmentation:
         
         label_lower = label_name.lower()
         
-        # Match pathology type
-        if any(dr in label_lower for dr in ['dr_', 'diabetic', 'proliferative']):
+        # ===== Dataset v6.1 Minority Classes =====
+        
+        # ERM (Epiretinal Membrane) - 0.4% in OCT
+        if 'erm' in label_lower or 'epiretinal' in label_lower:
+            return self.augmentations.get('erm', None)
+        
+        # Myopia Degenerative - 1.3% in Fundus
+        elif 'myopia' in label_lower and 'degenerative' in label_lower:
+            return self.augmentations.get('myopia_degenerative', None)
+        
+        # ===== Vascular Pathologies with OCT/Fundus distinction =====
+        
+        # RVO/RAO - Different handling for OCT vs Fundus
+        elif any(vascular in label_lower for vascular in ['rao', 'rvo']):
+            if 'oct' in label_lower:
+                # OCT vascular occlusions (0.4-0.5% minority)
+                return self.augmentations.get('vascular_oct', None)
+            else:
+                # Fundus vascular occlusions
+                return self.augmentations.get('hemorrhage_fundus', None)
+        
+        # ===== Diabetic Retinopathy Grades =====
+        
+        elif any(dr in label_lower for dr in ['dr_', 'diabetic', 'proliferative']):
             return self.augmentations.get('dr', None)
-        elif any(cnv in label_lower for cnv in ['cnv', 'amd', 'choroidal']):
+        
+        # ===== Macular Pathologies =====
+        
+        # CNV/AMD
+        elif any(cnv in label_lower for cnv in ['cnv', 'amd', 'wet_amd', 'choroidal']):
             return self.augmentations.get('cnv_amd', None)
+        
+        # Dry AMD (OCT only)
+        elif 'dry' in label_lower and 'amd' in label_lower:
+            return self.augmentations.get('oct', None)
+        
+        # CSR
+        elif 'csr' in label_lower or 'serous' in label_lower:
+            return self.augmentations.get('csr', None)
+        
+        # DME (Diabetic Macular Edema)
+        elif 'dme' in label_lower or 'macular_edema' in label_lower:
+            return self.augmentations.get('dr', None)
+        
+        # ===== Glaucoma =====
+        
         elif 'glaucoma' in label_lower:
             return self.augmentations.get('glaucoma', None)
-        elif 'oct' in label_lower:
-            return self.augmentations.get('oct', None)
-        elif any(hem in label_lower for hem in ['rao', 'rvo', 'hemorrhage']):
-            return self.augmentations.get('hemorrhage', None)
         
+        # ===== Other Fundus Pathologies =====
+        
+        # Retinal Detachment
+        elif 'retinal_detachment' in label_lower or 'detachment' in label_lower:
+            return self.augmentations.get('retinal_detachment', None)
+        
+        # Hypertensive Retinopathy
+        elif 'hypertensive' in label_lower:
+            return self.augmentations.get('hemorrhage_fundus', None)
+        
+        # Drusen
+        elif 'drusen' in label_lower:
+            return self.augmentations.get('cnv_amd', None)
+        
+        # Macular Scar
+        elif 'macular_scar' in label_lower or 'scar' in label_lower:
+            return self.augmentations.get('cnv_amd', None)
+        
+        # Cataract
+        elif 'cataract' in label_lower:
+            # Mild blur augmentation for cataract
+            return A.Compose([
+                A.GaussianBlur(blur_limit=(5, 9), p=0.5),
+                A.RandomBrightnessContrast(
+                    brightness_limit=0.3, contrast_limit=0.2, p=0.6
+                ),
+            ])
+        
+        # Optic Disc Anomaly
+        elif 'optic_disc' in label_lower or 'disc_anomaly' in label_lower:
+            return self.augmentations.get('glaucoma', None)
+        
+        # Vitreomacular Interface Disease
+        elif 'vitreomacular' in label_lower or 'interface' in label_lower:
+            return self.augmentations.get('erm', None)
+        
+        # ===== General OCT augmentation for unmatched OCT classes =====
+        
+        elif 'oct' in label_lower and 'normal' not in label_lower:
+            return self.augmentations.get('oct', None)
+        
+        # No specific augmentation for Normal classes or Other
         return None
 
 
@@ -150,6 +301,7 @@ def create_train_transforms(
 ) -> Callable:
     """
     Create training transforms with advanced augmentations
+    Updated for dataset v6.1
     
     Args:
         config: Configuration object
@@ -554,3 +706,31 @@ class TestTimeAugmentation:
             results.append(augmented)
         
         return results
+
+
+# Dataset v6.1 specific augmentation weights
+DATASET_V61_CLASS_WEIGHTS = {
+    # OCT minority classes
+    "04_ERM": 2.0,          # 0.4%
+    "07_RVO_OCT": 2.0,      # 0.4%
+    "09_RAO_OCT": 1.5,      # 0.5%
+    
+    # Fundus minority class
+    "12_Myopia_Degenerative": 1.5,  # 1.3%
+}
+
+
+def get_class_augmentation_weight(class_name: str) -> float:
+    """
+    Get augmentation weight for a specific class in dataset v6.1
+    
+    Args:
+        class_name: Name of the class
+        
+    Returns:
+        Weight multiplier for augmentation
+    """
+    for key, weight in DATASET_V61_CLASS_WEIGHTS.items():
+        if key in class_name:
+            return weight
+    return 1.0

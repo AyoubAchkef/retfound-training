@@ -1,690 +1,550 @@
 #!/usr/bin/env python3
 """
-RETFound Performance Benchmark Script
-=====================================
-
-Benchmark various configurations and optimizations for RETFound training.
+Benchmark script for RETFound models on CAASI dataset v6.1.
+Supports benchmarking speed, memory usage, and accuracy across different configurations.
 """
 
-import os
+import argparse
+import json
 import sys
 import time
-import json
-import argparse
-import platform
-import psutil
-import torch
-import torch.nn as nn
 from pathlib import Path
-from typing import Dict, List, Any, Optional, Tuple
-from dataclasses import dataclass, asdict
-import numpy as np
-from datetime import datetime
-import pandas as pd
-import matplotlib.pyplot as plt
-import seaborn as sns
-from tqdm import tqdm
-import logging
+from typing import Dict, List, Optional, Tuple
 
-# Add parent directory to path
+import numpy as np
+import torch
+import torch.nn.functional as F
+from torch.utils.data import DataLoader
+from tqdm import tqdm
+import psutil
+import GPUtil
+
+# Add project root to path
 sys.path.append(str(Path(__file__).parent.parent))
 
 from retfound.core.config import RETFoundConfig
-from retfound.models.factory import create_model
-from retfound.data.datasets import create_dummy_data
-from retfound.training.optimizers import create_optimizer
-from retfound.training.trainer import RETFoundTrainer
-from retfound.utils.device import get_device_info
+from retfound.data import create_datamodule
+from retfound.models import create_model
+from retfound.metrics.medical import OphthalmologyMetrics
+from retfound.utils.device import get_device
+from retfound.utils.logging import get_logger
 
-# Configure logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(levelname)s - %(message)s'
-)
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 
-@dataclass
-class BenchmarkResult:
-    """Result of a single benchmark run"""
-    name: str
-    config: Dict[str, Any]
-    hardware: Dict[str, Any]
-    timing: Dict[str, float]
-    memory: Dict[str, float]
-    throughput: Dict[str, float]
-    errors: List[str]
-    timestamp: str = None
+class RETFoundBenchmark:
+    """Comprehensive benchmarking for RETFound models."""
     
-    def __post_init__(self):
-        if self.timestamp is None:
-            self.timestamp = datetime.now().isoformat()
-
-
-class PerformanceBenchmark:
-    """Comprehensive performance benchmarking for RETFound"""
-    
-    def __init__(self, output_dir: Path = Path("benchmark_results")):
-        self.output_dir = output_dir
-        self.output_dir.mkdir(parents=True, exist_ok=True)
-        self.results: List[BenchmarkResult] = []
-        self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    def __init__(
+        self,
+        dataset_path: str,
+        output_dir: str = "./benchmark_results",
+        device: Optional[torch.device] = None,
+        dataset_version: str = "v6.1"
+    ):
+        """
+        Initialize benchmark suite.
         
-    def get_system_info(self) -> Dict[str, Any]:
-        """Get comprehensive system information"""
+        Args:
+            dataset_path: Path to dataset
+            output_dir: Directory to save results
+            device: Device for benchmarking
+            dataset_version: Dataset version to use
+        """
+        self.dataset_path = Path(dataset_path)
+        self.output_dir = Path(output_dir)
+        self.output_dir.mkdir(parents=True, exist_ok=True)
+        self.device = device or get_device()
+        self.dataset_version = dataset_version
+        
+        # Results storage
+        self.results = {
+            'system_info': self._get_system_info(),
+            'dataset_info': {
+                'version': dataset_version,
+                'path': str(dataset_path)
+            },
+            'benchmarks': {}
+        }
+    
+    def _get_system_info(self) -> Dict:
+        """Get system information."""
         info = {
-            'platform': {
-                'system': platform.system(),
-                'release': platform.release(),
-                'version': platform.version(),
-                'machine': platform.machine(),
-                'processor': platform.processor(),
-                'python_version': platform.python_version(),
-            },
-            'hardware': {
-                'cpu_count': psutil.cpu_count(logical=False),
-                'cpu_count_logical': psutil.cpu_count(logical=True),
-                'cpu_freq': psutil.cpu_freq()._asdict() if psutil.cpu_freq() else None,
-                'memory_total_gb': psutil.virtual_memory().total / (1024**3),
-                'memory_available_gb': psutil.virtual_memory().available / (1024**3),
-            },
-            'pytorch': {
-                'version': torch.__version__,
-                'cuda_available': torch.cuda.is_available(),
-                'cuda_version': torch.version.cuda if torch.cuda.is_available() else None,
-                'cudnn_version': torch.backends.cudnn.version() if torch.cuda.is_available() else None,
-                'device_count': torch.cuda.device_count() if torch.cuda.is_available() else 0,
-            }
+            'platform': sys.platform,
+            'python_version': sys.version,
+            'torch_version': torch.__version__,
+            'cuda_available': torch.cuda.is_available(),
+            'cpu_count': psutil.cpu_count(),
+            'ram_gb': psutil.virtual_memory().total / (1024**3)
         }
         
-        # GPU information
         if torch.cuda.is_available():
-            gpu_info = []
-            for i in range(torch.cuda.device_count()):
-                props = torch.cuda.get_device_properties(i)
-                gpu_info.append({
-                    'name': props.name,
-                    'compute_capability': f"{props.major}.{props.minor}",
-                    'memory_gb': props.total_memory / (1024**3),
-                    'multi_processor_count': props.multi_processor_count,
-                })
-            info['gpu'] = gpu_info
+            info['cuda_version'] = torch.version.cuda
+            info['gpu_count'] = torch.cuda.device_count()
+            info['gpu_names'] = [torch.cuda.get_device_name(i) for i in range(torch.cuda.device_count())]
             
+            # Get GPU memory
+            gpus = GPUtil.getGPUs()
+            info['gpu_memory_gb'] = [gpu.memoryTotal / 1024 for gpu in gpus]
+        
         return info
     
-    def benchmark_model_creation(self, config: RETFoundConfig) -> Tuple[float, float]:
-        """Benchmark model creation time and memory"""
-        torch.cuda.empty_cache()
-        torch.cuda.reset_peak_memory_stats()
-        
-        start_mem = torch.cuda.memory_allocated() if torch.cuda.is_available() else 0
-        start_time = time.time()
-        
-        model = create_model(config)
-        model.to(self.device)
-        
-        creation_time = time.time() - start_time
-        peak_mem = torch.cuda.max_memory_allocated() - start_mem if torch.cuda.is_available() else 0
-        
-        del model
-        torch.cuda.empty_cache()
-        
-        return creation_time, peak_mem / (1024**3)  # Convert to GB
-    
-    def benchmark_forward_pass(
-        self, 
-        config: RETFoundConfig, 
-        batch_sizes: List[int] = [1, 4, 8, 16, 32],
-        num_iterations: int = 50
-    ) -> Dict[str, Any]:
-        """Benchmark forward pass performance"""
-        model = create_model(config)
-        model.to(self.device)
-        model.eval()
-        
-        results = {}
-        
-        for batch_size in batch_sizes:
-            if batch_size > 32 and config.input_size > 224:
-                # Skip large batches for high resolution
-                continue
-                
-            try:
-                # Warmup
-                dummy_input = torch.randn(
-                    batch_size, 3, config.input_size, config.input_size,
-                    device=self.device
-                )
-                for _ in range(5):
-                    with torch.no_grad():
-                        _ = model(dummy_input)
-                
-                # Measure forward pass
-                torch.cuda.synchronize() if torch.cuda.is_available() else None
-                start_time = time.time()
-                
-                for _ in range(num_iterations):
-                    with torch.no_grad():
-                        _ = model(dummy_input)
-                
-                torch.cuda.synchronize() if torch.cuda.is_available() else None
-                total_time = time.time() - start_time
-                
-                # Calculate metrics
-                time_per_batch = total_time / num_iterations
-                images_per_second = batch_size / time_per_batch
-                
-                # Memory usage
-                peak_memory = torch.cuda.max_memory_allocated() / (1024**3) if torch.cuda.is_available() else 0
-                
-                results[f'batch_{batch_size}'] = {
-                    'time_per_batch': time_per_batch,
-                    'images_per_second': images_per_second,
-                    'peak_memory_gb': peak_memory,
-                }
-                
-            except RuntimeError as e:
-                if 'out of memory' in str(e):
-                    results[f'batch_{batch_size}'] = {
-                        'error': 'OOM',
-                        'peak_memory_gb': torch.cuda.max_memory_allocated() / (1024**3) if torch.cuda.is_available() else 0,
-                    }
-                else:
-                    raise
-            
-            torch.cuda.empty_cache()
-        
-        del model
-        return results
-    
-    def benchmark_training_step(
+    def benchmark_model(
         self,
-        config: RETFoundConfig,
-        num_steps: int = 20
-    ) -> Dict[str, Any]:
-        """Benchmark complete training step"""
-        # Create model and optimizer
-        model = create_model(config)
-        model.to(self.device)
-        model.train()
+        model_type: str = "vit_large_patch16_224",
+        batch_sizes: List[int] = [1, 8, 16, 32],
+        input_sizes: List[int] = [224],
+        num_classes: int = 28,
+        pretrained_weights: Optional[str] = None,
+        warmup_iterations: int = 10,
+        benchmark_iterations: int = 100,
+        test_accuracy: bool = True
+    ) -> Dict:
+        """
+        Benchmark a specific model configuration.
         
-        optimizer_config = {
-            'name': 'adamw' if not config.use_sam else 'sam',
-            'base_lr': config.base_lr,
-            'weight_decay': config.weight_decay,
-            'use_sam': config.use_sam,
-            'sam_rho': config.sam_rho,
-        }
-        
-        optimizer = create_optimizer(model, optimizer_config)
-        
-        # Loss function
-        criterion = nn.CrossEntropyLoss()
-        
-        # Dummy data
-        dummy_input = torch.randn(
-            config.batch_size, 3, config.input_size, config.input_size,
-            device=self.device
-        )
-        dummy_target = torch.randint(
-            0, config.num_classes, (config.batch_size,),
-            device=self.device
-        )
-        
-        # Warmup
-        for _ in range(5):
-            optimizer.zero_grad()
-            output = model(dummy_input)
-            loss = criterion(output, dummy_target)
-            loss.backward()
-            optimizer.step()
-        
-        # Benchmark
-        torch.cuda.synchronize() if torch.cuda.is_available() else None
-        start_time = time.time()
-        start_mem = torch.cuda.memory_allocated() if torch.cuda.is_available() else 0
-        
-        step_times = []
-        for _ in range(num_steps):
-            step_start = time.time()
+        Args:
+            model_type: Model architecture to benchmark
+            batch_sizes: List of batch sizes to test
+            input_sizes: List of input sizes to test
+            num_classes: Number of output classes
+            pretrained_weights: Optional pretrained weights path
+            warmup_iterations: Number of warmup iterations
+            benchmark_iterations: Number of benchmark iterations
+            test_accuracy: Whether to test accuracy on validation set
             
-            optimizer.zero_grad()
-            output = model(dummy_input)
-            loss = criterion(output, dummy_target)
-            loss.backward()
-            optimizer.step()
-            
-            torch.cuda.synchronize() if torch.cuda.is_available() else None
-            step_times.append(time.time() - step_start)
-        
-        total_time = time.time() - start_time
-        peak_mem = torch.cuda.max_memory_allocated() - start_mem if torch.cuda.is_available() else 0
+        Returns:
+            Benchmark results dictionary
+        """
+        logger.info(f"Benchmarking {model_type}...")
         
         results = {
-            'total_time': total_time,
-            'avg_step_time': np.mean(step_times),
-            'std_step_time': np.std(step_times),
-            'min_step_time': np.min(step_times),
-            'max_step_time': np.max(step_times),
-            'peak_memory_gb': peak_mem / (1024**3),
-            'throughput_img_per_sec': config.batch_size / np.mean(step_times),
+            'model_type': model_type,
+            'num_classes': num_classes,
+            'configurations': []
         }
         
-        del model, optimizer
-        torch.cuda.empty_cache()
-        
-        return results
-    
-    def benchmark_optimization_features(self, base_config: RETFoundConfig) -> List[BenchmarkResult]:
-        """Benchmark different optimization features"""
-        optimization_configs = [
-            ('baseline', {}),
-            ('amp_fp16', {'use_amp': True, 'amp_dtype': torch.float16}),
-            ('amp_bf16', {'use_amp': True, 'amp_dtype': torch.bfloat16}),
-            ('gradient_checkpoint', {'use_gradient_checkpointing': True}),
-            ('sam_optimizer', {'use_sam': True}),
-            ('ema', {'use_ema': True}),
-            ('compile', {'use_compile': True, 'compile_mode': 'default'}),
-            ('all_optimizations', {
-                'use_amp': True,
-                'amp_dtype': torch.bfloat16,
-                'use_gradient_checkpointing': True,
-                'use_sam': True,
-                'use_ema': True,
-                'use_compile': True,
-            }),
-        ]
-        
-        results = []
-        
-        for name, opt_config in optimization_configs:
-            logger.info(f"Benchmarking: {name}")
-            
-            # Update config
-            config = RETFoundConfig(**{**asdict(base_config), **opt_config})
-            
-            try:
-                # Skip compile on older PyTorch versions
-                if config.use_compile and not hasattr(torch, 'compile'):
-                    logger.warning(f"Skipping {name}: torch.compile not available")
-                    continue
+        for input_size in input_sizes:
+            for batch_size in batch_sizes:
+                logger.info(f"Testing input_size={input_size}, batch_size={batch_size}")
                 
-                # Model creation
-                creation_time, creation_memory = self.benchmark_model_creation(config)
-                
-                # Forward pass
-                forward_results = self.benchmark_forward_pass(
-                    config, 
-                    batch_sizes=[config.batch_size],
-                    num_iterations=20
-                )
-                
-                # Training step
-                training_results = self.benchmark_training_step(config, num_steps=10)
-                
-                # Create result
-                result = BenchmarkResult(
-                    name=name,
-                    config=opt_config,
-                    hardware=self.get_system_info(),
-                    timing={
-                        'model_creation': creation_time,
-                        'forward_pass': forward_results[f'batch_{config.batch_size}'].get('time_per_batch', -1),
-                        'training_step': training_results['avg_step_time'],
-                    },
-                    memory={
-                        'model_creation_gb': creation_memory,
-                        'forward_pass_gb': forward_results[f'batch_{config.batch_size}'].get('peak_memory_gb', -1),
-                        'training_step_gb': training_results['peak_memory_gb'],
-                    },
-                    throughput={
-                        'forward_img_per_sec': forward_results[f'batch_{config.batch_size}'].get('images_per_second', -1),
-                        'training_img_per_sec': training_results['throughput_img_per_sec'],
-                    },
-                    errors=[]
-                )
-                
-                results.append(result)
-                
-            except Exception as e:
-                logger.error(f"Error benchmarking {name}: {e}")
-                result = BenchmarkResult(
-                    name=name,
-                    config=opt_config,
-                    hardware=self.get_system_info(),
-                    timing={},
-                    memory={},
-                    throughput={},
-                    errors=[str(e)]
-                )
-                results.append(result)
-            
-            torch.cuda.empty_cache()
-        
-        return results
-    
-    def benchmark_batch_sizes(self, config: RETFoundConfig) -> List[BenchmarkResult]:
-        """Benchmark different batch sizes"""
-        batch_sizes = [1, 2, 4, 8, 16, 32, 64, 128]
-        results = []
-        
-        for batch_size in batch_sizes:
-            logger.info(f"Benchmarking batch size: {batch_size}")
-            
-            # Update config
-            config.batch_size = batch_size
-            
-            try:
-                # Forward pass only (training might OOM)
-                forward_results = self.benchmark_forward_pass(
-                    config,
-                    batch_sizes=[batch_size],
-                    num_iterations=10
-                )
-                
-                if f'batch_{batch_size}' in forward_results and 'error' not in forward_results[f'batch_{batch_size}']:
-                    result = BenchmarkResult(
-                        name=f'batch_size_{batch_size}',
-                        config={'batch_size': batch_size},
-                        hardware=self.get_system_info(),
-                        timing={
-                            'forward_pass': forward_results[f'batch_{batch_size}']['time_per_batch'],
-                        },
-                        memory={
-                            'peak_memory_gb': forward_results[f'batch_{batch_size}']['peak_memory_gb'],
-                        },
-                        throughput={
-                            'images_per_second': forward_results[f'batch_{batch_size}']['images_per_second'],
-                        },
-                        errors=[]
+                try:
+                    config_results = self._benchmark_configuration(
+                        model_type=model_type,
+                        batch_size=batch_size,
+                        input_size=input_size,
+                        num_classes=num_classes,
+                        pretrained_weights=pretrained_weights,
+                        warmup_iterations=warmup_iterations,
+                        benchmark_iterations=benchmark_iterations,
+                        test_accuracy=test_accuracy
                     )
-                else:
-                    result = BenchmarkResult(
-                        name=f'batch_size_{batch_size}',
-                        config={'batch_size': batch_size},
-                        hardware=self.get_system_info(),
-                        timing={},
-                        memory={
-                            'peak_memory_gb': forward_results[f'batch_{batch_size}'].get('peak_memory_gb', -1),
-                        },
-                        throughput={},
-                        errors=['OOM']
-                    )
+                    results['configurations'].append(config_results)
+                    
+                except Exception as e:
+                    logger.error(f"Failed to benchmark configuration: {str(e)}")
+                    results['configurations'].append({
+                        'input_size': input_size,
+                        'batch_size': batch_size,
+                        'error': str(e)
+                    })
                 
-                results.append(result)
-                
-            except Exception as e:
-                logger.error(f"Error with batch size {batch_size}: {e}")
-                break
+                # Clear cache
+                torch.cuda.empty_cache()
         
         return results
     
-    def save_results(self, results: List[BenchmarkResult], name: str = "benchmark"):
-        """Save benchmark results"""
-        # Save as JSON
-        json_path = self.output_dir / f"{name}_results.json"
-        with open(json_path, 'w') as f:
-            json.dump([asdict(r) for r in results], f, indent=2)
+    def _benchmark_configuration(
+        self,
+        model_type: str,
+        batch_size: int,
+        input_size: int,
+        num_classes: int,
+        pretrained_weights: Optional[str],
+        warmup_iterations: int,
+        benchmark_iterations: int,
+        test_accuracy: bool
+    ) -> Dict:
+        """Benchmark a specific configuration."""
+        # Create model
+        config = RETFoundConfig(
+            model_type=model_type,
+            num_classes=num_classes,
+            input_size=input_size,
+            batch_size=batch_size
+        )
         
-        # Convert to DataFrame
-        df_data = []
-        for result in results:
-            row = {
-                'name': result.name,
-                **{f'config_{k}': v for k, v in result.config.items()},
-                **{f'timing_{k}': v for k, v in result.timing.items()},
-                **{f'memory_{k}': v for k, v in result.memory.items()},
-                **{f'throughput_{k}': v for k, v in result.throughput.items()},
-                'errors': ','.join(result.errors) if result.errors else '',
+        model = create_model(config)
+        
+        # Load pretrained weights if provided
+        if pretrained_weights:
+            checkpoint = torch.load(pretrained_weights, map_location='cpu')
+            model.load_state_dict(checkpoint['model_state_dict'], strict=False)
+        
+        model = model.to(self.device)
+        model.eval()
+        
+        # Create dummy input
+        dummy_input = torch.randn(batch_size, 3, input_size, input_size).to(self.device)
+        
+        # Warmup
+        logger.info("Warming up...")
+        for _ in range(warmup_iterations):
+            with torch.no_grad():
+                _ = model(dummy_input)
+        
+        torch.cuda.synchronize() if torch.cuda.is_available() else None
+        
+        # Benchmark inference speed
+        logger.info("Benchmarking inference speed...")
+        inference_times = []
+        memory_usage = []
+        
+        for _ in tqdm(range(benchmark_iterations), desc="Inference"):
+            # Record memory before
+            if torch.cuda.is_available():
+                torch.cuda.synchronize()
+                mem_before = torch.cuda.memory_allocated()
+            
+            # Time inference
+            start_time = time.perf_counter()
+            
+            with torch.no_grad():
+                outputs = model(dummy_input)
+            
+            if torch.cuda.is_available():
+                torch.cuda.synchronize()
+            
+            end_time = time.perf_counter()
+            
+            # Record memory after
+            if torch.cuda.is_available():
+                mem_after = torch.cuda.memory_allocated()
+                memory_usage.append((mem_after - mem_before) / (1024**2))  # MB
+            
+            inference_times.append(end_time - start_time)
+        
+        # Calculate statistics
+        inference_times = np.array(inference_times)
+        throughput = batch_size / inference_times.mean()
+        
+        results = {
+            'input_size': input_size,
+            'batch_size': batch_size,
+            'inference_time_ms': {
+                'mean': inference_times.mean() * 1000,
+                'std': inference_times.std() * 1000,
+                'min': inference_times.min() * 1000,
+                'max': inference_times.max() * 1000,
+                'p50': np.percentile(inference_times, 50) * 1000,
+                'p95': np.percentile(inference_times, 95) * 1000,
+                'p99': np.percentile(inference_times, 99) * 1000
+            },
+            'throughput_fps': throughput,
+            'latency_per_image_ms': (inference_times.mean() * 1000) / batch_size
+        }
+        
+        if memory_usage:
+            results['memory_mb'] = {
+                'mean': np.mean(memory_usage),
+                'max': np.max(memory_usage)
             }
-            df_data.append(row)
         
-        df = pd.DataFrame(df_data)
+        # Test accuracy if requested
+        if test_accuracy:
+            logger.info("Testing accuracy on validation set...")
+            accuracy_results = self._test_accuracy(model, config)
+            results['accuracy'] = accuracy_results
         
-        # Save as CSV
-        csv_path = self.output_dir / f"{name}_results.csv"
-        df.to_csv(csv_path, index=False)
+        # Get model info
+        results['model_info'] = self._get_model_info(model)
         
-        logger.info(f"Results saved to {json_path} and {csv_path}")
-        
-        return df
+        return results
     
-    def plot_results(self, results: List[BenchmarkResult], name: str = "benchmark"):
-        """Create visualization plots for benchmark results"""
-        df = self.save_results(results, name)
+    def _test_accuracy(self, model: torch.nn.Module, config: RETFoundConfig) -> Dict:
+        """Test model accuracy on validation set."""
+        # Create datamodule
+        data_config = config.to_dict()
+        data_config['data'] = {
+            'dataset_path': str(self.dataset_path),
+            'dataset_version': self.dataset_version,
+            'batch_size': config.batch_size,
+            'num_workers': 4
+        }
         
-        # Setup plot style
-        plt.style.use('seaborn-v0_8-darkgrid')
-        sns.set_palette("husl")
+        datamodule = create_datamodule(data_config)
+        datamodule.setup('fit')
+        val_loader = datamodule.val_dataloader()
         
-        # Create figure with subplots
-        fig, axes = plt.subplots(2, 2, figsize=(15, 12))
-        fig.suptitle(f'RETFound Benchmark Results - {name}', fontsize=16)
+        # Initialize metrics
+        metrics = OphthalmologyMetrics(
+            num_classes=config.num_classes,
+            dataset_version=self.dataset_version
+        )
         
-        # Plot 1: Training throughput
-        if 'throughput_training_img_per_sec' in df.columns:
-            ax = axes[0, 0]
-            data = df[df['throughput_training_img_per_sec'] > 0]
-            if not data.empty:
-                sns.barplot(data=data, x='name', y='throughput_training_img_per_sec', ax=ax)
-                ax.set_title('Training Throughput')
-                ax.set_xlabel('Configuration')
-                ax.set_ylabel('Images/Second')
-                ax.tick_params(axis='x', rotation=45)
+        # Run validation
+        model.eval()
+        with torch.no_grad():
+            for batch in tqdm(val_loader, desc="Validation", leave=False):
+                images = batch['image'].to(self.device)
+                labels = batch['label'].to(self.device)
+                
+                outputs = model(images)
+                if isinstance(outputs, dict):
+                    logits = outputs['logits']
+                else:
+                    logits = outputs
+                
+                probs = F.softmax(logits, dim=1)
+                preds = logits.argmax(dim=1)
+                
+                metrics.update(preds, labels, probs)
         
-        # Plot 2: Memory usage
-        if 'memory_training_step_gb' in df.columns:
-            ax = axes[0, 1]
-            data = df[df['memory_training_step_gb'] > 0]
-            if not data.empty:
-                sns.barplot(data=data, x='name', y='memory_training_step_gb', ax=ax)
-                ax.set_title('Training Memory Usage')
-                ax.set_xlabel('Configuration')
-                ax.set_ylabel('Memory (GB)')
-                ax.tick_params(axis='x', rotation=45)
+        # Compute metrics
+        results = metrics.compute()
         
-        # Plot 3: Forward pass time
-        if 'timing_forward_pass' in df.columns:
-            ax = axes[1, 0]
-            data = df[df['timing_forward_pass'] > 0]
-            if not data.empty:
-                sns.barplot(data=data, x='name', y='timing_forward_pass', ax=ax)
-                ax.set_title('Forward Pass Time')
-                ax.set_xlabel('Configuration')
-                ax.set_ylabel('Time (seconds)')
-                ax.tick_params(axis='x', rotation=45)
-        
-        # Plot 4: Speedup comparison
-        if 'throughput_training_img_per_sec' in df.columns:
-            ax = axes[1, 1]
-            data = df[df['throughput_training_img_per_sec'] > 0].copy()
-            if not data.empty and 'baseline' in data['name'].values:
-                baseline_throughput = data[data['name'] == 'baseline']['throughput_training_img_per_sec'].iloc[0]
-                data['speedup'] = data['throughput_training_img_per_sec'] / baseline_throughput
-                sns.barplot(data=data, x='name', y='speedup', ax=ax)
-                ax.axhline(y=1.0, color='red', linestyle='--', label='Baseline')
-                ax.set_title('Speedup vs Baseline')
-                ax.set_xlabel('Configuration')
-                ax.set_ylabel('Speedup Factor')
-                ax.tick_params(axis='x', rotation=45)
-                ax.legend()
-        
-        plt.tight_layout()
-        
-        # Save plot
-        plot_path = self.output_dir / f"{name}_plots.png"
-        plt.savefig(plot_path, dpi=150, bbox_inches='tight')
-        plt.close()
-        
-        logger.info(f"Plots saved to {plot_path}")
+        # Return key metrics
+        return {
+            'accuracy': results.get('accuracy', 0),
+            'balanced_accuracy': results.get('balanced_accuracy', 0),
+            'f1_macro': results.get('f1_macro', 0),
+            'auc_macro': results.get('auc_macro', 0)
+        }
     
-    def generate_report(self, results: List[BenchmarkResult], name: str = "benchmark"):
-        """Generate a comprehensive benchmark report"""
-        report_path = self.output_dir / f"{name}_report.txt"
+    def _get_model_info(self, model: torch.nn.Module) -> Dict:
+        """Get model information."""
+        # Count parameters
+        total_params = sum(p.numel() for p in model.parameters())
+        trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
+        
+        # Get model size
+        param_size = 0
+        buffer_size = 0
+        
+        for param in model.parameters():
+            param_size += param.nelement() * param.element_size()
+        
+        for buffer in model.buffers():
+            buffer_size += buffer.nelement() * buffer.element_size()
+        
+        model_size_mb = (param_size + buffer_size) / (1024**2)
+        
+        return {
+            'total_parameters': total_params,
+            'trainable_parameters': trainable_params,
+            'model_size_mb': model_size_mb
+        }
+    
+    def benchmark_all_models(
+        self,
+        model_types: Optional[List[str]] = None,
+        **kwargs
+    ) -> Dict:
+        """
+        Benchmark multiple model types.
+        
+        Args:
+            model_types: List of model types to benchmark
+            **kwargs: Additional arguments for benchmark_model
+            
+        Returns:
+            All benchmark results
+        """
+        if model_types is None:
+            # Default models to benchmark
+            model_types = [
+                "vit_tiny_patch16_224",
+                "vit_small_patch16_224", 
+                "vit_base_patch16_224",
+                "vit_large_patch16_224",
+                "resnet18",
+                "resnet50",
+                "efficientnet_b0",
+                "efficientnet_b3"
+            ]
+        
+        for model_type in model_types:
+            logger.info(f"\nBenchmarking {model_type}")
+            logger.info("=" * 60)
+            
+            results = self.benchmark_model(model_type=model_type, **kwargs)
+            self.results['benchmarks'][model_type] = results
+            
+            # Save intermediate results
+            self._save_results()
+        
+        return self.results
+    
+    def compare_modalities(
+        self,
+        model_type: str = "vit_large_patch16_224",
+        batch_size: int = 16
+    ) -> Dict:
+        """
+        Compare performance on fundus vs OCT modalities.
+        
+        Args:
+            model_type: Model type to test
+            batch_size: Batch size for testing
+            
+        Returns:
+            Comparison results
+        """
+        logger.info("Comparing modalities...")
+        
+        results = {
+            'model_type': model_type,
+            'batch_size': batch_size,
+            'modalities': {}
+        }
+        
+        for modality in ['fundus', 'oct', 'both']:
+            logger.info(f"Testing {modality} modality...")
+            
+            # Create model with appropriate number of classes
+            if modality == 'fundus':
+                num_classes = 18
+            elif modality == 'oct':
+                num_classes = 10
+            else:
+                num_classes = 28
+            
+            # Benchmark
+            modality_results = self._benchmark_configuration(
+                model_type=model_type,
+                batch_size=batch_size,
+                input_size=224,
+                num_classes=num_classes,
+                pretrained_weights=None,
+                warmup_iterations=5,
+                benchmark_iterations=50,
+                test_accuracy=False
+            )
+            
+            results['modalities'][modality] = modality_results
+        
+        self.results['benchmarks']['modality_comparison'] = results
+        self._save_results()
+        
+        return results
+    
+    def _save_results(self):
+        """Save benchmark results to file."""
+        output_file = self.output_dir / "benchmark_results.json"
+        
+        with open(output_file, 'w') as f:
+            json.dump(self.results, f, indent=2)
+        
+        logger.info(f"Results saved to {output_file}")
+    
+    def generate_report(self):
+        """Generate benchmark report."""
+        report_path = self.output_dir / "benchmark_report.txt"
         
         with open(report_path, 'w') as f:
-            f.write("=" * 80 + "\n")
-            f.write("RETFound Performance Benchmark Report\n")
+            f.write("RETFound Benchmark Report\n")
             f.write("=" * 80 + "\n\n")
             
-            # System information
-            system_info = self.get_system_info()
+            # System info
             f.write("System Information:\n")
             f.write("-" * 40 + "\n")
-            f.write(f"Platform: {system_info['platform']['system']} {system_info['platform']['release']}\n")
-            f.write(f"Python: {system_info['platform']['python_version']}\n")
-            f.write(f"PyTorch: {system_info['pytorch']['version']}\n")
-            
-            if system_info['pytorch']['cuda_available']:
-                f.write(f"CUDA: {system_info['pytorch']['cuda_version']}\n")
-                f.write(f"GPU: {system_info['gpu'][0]['name']} ({system_info['gpu'][0]['memory_gb']:.1f} GB)\n")
-            else:
-                f.write("GPU: Not available\n")
-            
-            f.write(f"CPU: {system_info['hardware']['cpu_count']} cores\n")
-            f.write(f"RAM: {system_info['hardware']['memory_total_gb']:.1f} GB\n")
+            for key, value in self.results['system_info'].items():
+                f.write(f"{key}: {value}\n")
             f.write("\n")
             
-            # Results summary
-            f.write("Benchmark Results Summary:\n")
+            # Benchmark results
+            f.write("Benchmark Results:\n")
             f.write("-" * 40 + "\n")
             
-            # Find best configurations
-            valid_results = [r for r in results if not r.errors and r.throughput.get('training_img_per_sec', 0) > 0]
-            
-            if valid_results:
-                # Best throughput
-                best_throughput = max(valid_results, key=lambda r: r.throughput.get('training_img_per_sec', 0))
-                f.write(f"Best Training Throughput: {best_throughput.name}\n")
-                f.write(f"  - {best_throughput.throughput['training_img_per_sec']:.1f} images/second\n")
+            for model_name, model_results in self.results['benchmarks'].items():
+                f.write(f"\n{model_name}:\n")
                 
-                # Most memory efficient
-                best_memory = min(valid_results, key=lambda r: r.memory.get('training_step_gb', float('inf')))
-                f.write(f"\nMost Memory Efficient: {best_memory.name}\n")
-                f.write(f"  - {best_memory.memory['training_step_gb']:.2f} GB\n")
-                
-                # Baseline comparison
-                baseline = next((r for r in valid_results if r.name == 'baseline'), None)
-                if baseline:
-                    f.write(f"\nBaseline Performance:\n")
-                    f.write(f"  - Throughput: {baseline.throughput.get('training_img_per_sec', 0):.1f} images/second\n")
-                    f.write(f"  - Memory: {baseline.memory.get('training_step_gb', 0):.2f} GB\n")
-                    
-                    # Speedups
-                    f.write(f"\nSpeedups vs Baseline:\n")
-                    for result in valid_results:
-                        if result.name != 'baseline':
-                            speedup = result.throughput['training_img_per_sec'] / baseline.throughput['training_img_per_sec']
-                            f.write(f"  - {result.name}: {speedup:.2f}x\n")
-            
-            # Errors
-            error_results = [r for r in results if r.errors]
-            if error_results:
-                f.write(f"\nConfigurations with Errors:\n")
-                for result in error_results:
-                    f.write(f"  - {result.name}: {', '.join(result.errors)}\n")
-            
-            f.write("\n" + "=" * 80 + "\n")
+                if 'configurations' in model_results:
+                    for config in model_results['configurations']:
+                        if 'error' in config:
+                            f.write(f"  Error: {config['error']}\n")
+                            continue
+                        
+                        f.write(f"  Batch size {config['batch_size']}:\n")
+                        f.write(f"    Throughput: {config['throughput_fps']:.2f} FPS\n")
+                        f.write(f"    Latency: {config['latency_per_image_ms']:.2f} ms/image\n")
+                        
+                        if 'memory_mb' in config:
+                            f.write(f"    Memory: {config['memory_mb']['mean']:.2f} MB\n")
+                        
+                        if 'accuracy' in config:
+                            f.write(f"    Accuracy: {config['accuracy']['accuracy']:.4f}\n")
         
         logger.info(f"Report saved to {report_path}")
 
 
 def main():
-    """Main benchmark function"""
+    """Main entry point."""
     parser = argparse.ArgumentParser(
-        description='Benchmark RETFound performance',
-        formatter_class=argparse.RawDescriptionHelpFormatter
-    )
-    
-    parser.add_argument(
-        '--suite',
-        choices=['quick', 'optimizations', 'batch_sizes', 'full'],
-        default='quick',
-        help='Benchmark suite to run'
+        description="Benchmark RETFound models on CAASI dataset v6.1"
     )
     parser.add_argument(
-        '--model-type',
-        default='vit_large_patch16_224',
-        help='Model architecture to benchmark'
+        'dataset_path',
+        type=str,
+        help='Path to dataset'
     )
     parser.add_argument(
-        '--batch-size',
+        '--models',
+        nargs='+',
+        help='Model types to benchmark'
+    )
+    parser.add_argument(
+        '--batch-sizes',
+        nargs='+',
         type=int,
-        default=16,
-        help='Base batch size for benchmarks'
+        default=[1, 8, 16, 32],
+        help='Batch sizes to test'
     )
     parser.add_argument(
-        '--num-classes',
-        type=int,
-        default=22,
-        help='Number of output classes'
-    )
-    parser.add_argument(
-        '--input-size',
-        type=int,
-        default=224,
-        help='Input image size'
-    )
-    parser.add_argument(
-        '--output',
-        type=Path,
-        default=Path('benchmark_results'),
+        '--output-dir',
+        type=str,
+        default='./benchmark_results',
         help='Output directory for results'
+    )
+    parser.add_argument(
+        '--test-accuracy',
+        action='store_true',
+        help='Test accuracy on validation set'
+    )
+    parser.add_argument(
+        '--compare-modalities',
+        action='store_true',
+        help='Compare performance on different modalities'
+    )
+    parser.add_argument(
+        '--dataset-version',
+        type=str,
+        default='v6.1',
+        choices=['v4.0', 'v6.1'],
+        help='Dataset version'
     )
     
     args = parser.parse_args()
     
-    # Create base configuration
-    base_config = RETFoundConfig(
-        model_type=args.model_type,
-        batch_size=args.batch_size,
-        num_classes=args.num_classes,
-        input_size=args.input_size,
-        epochs=1,  # Not used in benchmarks
-        use_amp=False,
-        use_sam=False,
-        use_ema=False,
-        use_compile=False,
-        use_gradient_checkpointing=False,
+    # Initialize benchmark
+    benchmark = RETFoundBenchmark(
+        dataset_path=args.dataset_path,
+        output_dir=args.output_dir,
+        dataset_version=args.dataset_version
     )
     
-    # Create benchmark instance
-    benchmark = PerformanceBenchmark(args.output)
-    
-    logger.info(f"Starting {args.suite} benchmark suite...")
-    logger.info(f"Model: {args.model_type}")
-    logger.info(f"Batch size: {args.batch_size}")
-    logger.info(f"Input size: {args.input_size}x{args.input_size}")
-    
     # Run benchmarks
-    if args.suite == 'quick':
-        # Quick benchmark with a few key configurations
-        results = benchmark.benchmark_optimization_features(base_config)
-        benchmark.plot_results(results, 'quick_benchmark')
-        benchmark.generate_report(results, 'quick_benchmark')
-        
-    elif args.suite == 'optimizations':
-        # Full optimization comparison
-        results = benchmark.benchmark_optimization_features(base_config)
-        benchmark.plot_results(results, 'optimization_benchmark')
-        benchmark.generate_report(results, 'optimization_benchmark')
-        
-    elif args.suite == 'batch_sizes':
-        # Batch size scaling
-        results = benchmark.benchmark_batch_sizes(base_config)
-        benchmark.plot_results(results, 'batch_size_benchmark')
-        benchmark.generate_report(results, 'batch_size_benchmark')
-        
-    elif args.suite == 'full':
-        # Complete benchmark suite
-        opt_results = benchmark.benchmark_optimization_features(base_config)
-        batch_results = benchmark.benchmark_batch_sizes(base_config)
-        
-        all_results = opt_results + batch_results
-        benchmark.plot_results(all_results, 'full_benchmark')
-        benchmark.generate_report(all_results, 'full_benchmark')
+    if args.compare_modalities:
+        benchmark.compare_modalities()
+    else:
+        benchmark.benchmark_all_models(
+            model_types=args.models,
+            batch_sizes=args.batch_sizes,
+            test_accuracy=args.test_accuracy
+        )
     
-    logger.info(f"Benchmark complete! Results saved to {args.output}")
+    # Generate report
+    benchmark.generate_report()
 
 
 if __name__ == '__main__':

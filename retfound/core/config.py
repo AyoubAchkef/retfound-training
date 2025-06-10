@@ -20,7 +20,7 @@ class ModelConfig:
     """Model architecture configuration."""
     
     type: str = "vit_large_patch16_224"
-    num_classes: int = 22
+    num_classes: int = 28
     patch_size: int = 16
     embed_dim: int = 1024
     depth: int = 24

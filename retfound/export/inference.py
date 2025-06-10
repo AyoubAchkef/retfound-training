@@ -1,588 +1,536 @@
 """
-Inference Utilities
-==================
-
-Utilities for model inference and deployment.
+Inference utilities for exported RETFound models.
+Supports inference on v6.1 models with 28 classes.
 """
 
-import logging
-from pathlib import Path
-from typing import Union, Optional, Dict, Any, List, Tuple
-import time
 import json
+from pathlib import Path
+from typing import Dict, List, Optional, Union, Tuple
+
 import numpy as np
 import torch
-import torch.nn as nn
+import torch.nn.functional as F
 from PIL import Image
+import cv2
 
-logger = logging.getLogger(__name__)
+from ..core.constants import DATASET_V61_CLASSES, DATASET_V40_CLASSES, CRITICAL_CONDITIONS
+from ..core.exceptions import InferenceError
+from ..data.transforms import get_eval_transforms
+from ..utils.logging import get_logger
 
-# Try to import optional dependencies
-try:
-    import onnxruntime as ort
-    ONNX_AVAILABLE = True
-except ImportError:
-    ONNX_AVAILABLE = False
-
-try:
-    import tensorrt as trt
-    TENSORRT_AVAILABLE = True
-except ImportError:
-    TENSORRT_AVAILABLE = False
+logger = get_logger(__name__)
 
 
-class InferenceModel:
-    """
-    Unified interface for inference across different model formats
-    """
+class RETFoundPredictor:
+    """Inference engine for exported RETFound models."""
     
     def __init__(
         self,
-        model_path: Union[str, Path],
-        device: str = 'cuda',
-        input_shape: Optional[Tuple[int, ...]] = None,
-        normalize: bool = True,
-        mean: List[float] = [0.5, 0.5, 0.5],
-        std: List[float] = [0.5, 0.5, 0.5]
+        model_path: str,
+        metadata_path: Optional[str] = None,
+        device: Optional[str] = None,
+        batch_size: int = 1
     ):
         """
-        Initialize inference model
+        Initialize predictor with exported model.
         
         Args:
-            model_path: Path to model file
-            device: Device to run on
-            input_shape: Expected input shape (C, H, W)
-            normalize: Whether to normalize inputs
-            mean: Normalization mean
-            std: Normalization std
+            model_path: Path to exported model (.onnx, .pt, .trt)
+            metadata_path: Optional path to metadata JSON
+            device: Device for inference ('cpu', 'cuda', 'tensorrt')
+            batch_size: Batch size for inference
         """
         self.model_path = Path(model_path)
-        self.device = device
-        self.input_shape = input_shape or (3, 224, 224)
-        self.normalize = normalize
-        self.mean = torch.tensor(mean).view(3, 1, 1)
-        self.std = torch.tensor(std).view(3, 1, 1)
+        self.batch_size = batch_size
         
-        # Load model based on format
-        self._load_model()
+        # Auto-detect format
+        self.format = self._detect_format()
         
-        # Warm up
-        self._warmup()
+        # Load metadata
+        self.metadata = self._load_metadata(metadata_path)
+        
+        # Extract model info
+        self.dataset_version = self.metadata.get('dataset_version', 'v6.1')
+        self.num_classes = self.metadata.get('num_classes', 28)
+        self.class_names = self.metadata.get('class_names', 
+                                             DATASET_V61_CLASSES if self.num_classes == 28 else DATASET_V40_CLASSES)
+        
+        # Set device
+        self.device = self._setup_device(device)
+        
+        # Load model
+        self.model = self._load_model()
+        
+        # Setup preprocessing
+        self.transform = self._setup_preprocessing()
+        
+        logger.info(f"Initialized {self.format} predictor for {self.dataset_version} "
+                   f"with {self.num_classes} classes on {self.device}")
+    
+    def _detect_format(self) -> str:
+        """Detect model format from file extension."""
+        suffix = self.model_path.suffix.lower()
+        if suffix == '.onnx':
+            return 'onnx'
+        elif suffix in ['.pt', '.pth']:
+            return 'torchscript'
+        elif suffix == '.trt':
+            return 'tensorrt'
+        else:
+            raise InferenceError(f"Unsupported model format: {suffix}")
+    
+    def _load_metadata(self, metadata_path: Optional[str]) -> Dict:
+        """Load model metadata."""
+        # Try explicit metadata path
+        if metadata_path:
+            with open(metadata_path) as f:
+                return json.load(f).get('model_info', {})
+        
+        # Try default metadata locations
+        default_paths = [
+            self.model_path.parent / "export_metadata.json",
+            self.model_path.with_suffix('.json')
+        ]
+        
+        for path in default_paths:
+            if path.exists():
+                with open(path) as f:
+                    data = json.load(f)
+                    return data.get('model_info', data)
+        
+        # Try to extract from model if ONNX
+        if self.format == 'onnx':
+            metadata = self._extract_onnx_metadata()
+            if metadata:
+                return metadata
+        
+        logger.warning("No metadata found, using defaults")
+        return {}
+    
+    def _extract_onnx_metadata(self) -> Dict:
+        """Extract metadata from ONNX model."""
+        try:
+            import onnx
+            
+            model = onnx.load(str(self.model_path))
+            metadata = {}
+            
+            for prop in model.metadata_props:
+                if prop.key == 'class_names':
+                    metadata['class_names'] = json.loads(prop.value)
+                elif prop.key == 'num_classes':
+                    metadata['num_classes'] = int(prop.value)
+                elif prop.key == 'dataset_version':
+                    metadata['dataset_version'] = prop.value
+            
+            return metadata
+        except:
+            return {}
+    
+    def _setup_device(self, device: Optional[str]) -> str:
+        """Setup inference device."""
+        if device:
+            return device
+        
+        # Auto-detect based on format and availability
+        if self.format == 'tensorrt':
+            return 'tensorrt'
+        elif torch.cuda.is_available():
+            return 'cuda'
+        else:
+            return 'cpu'
     
     def _load_model(self):
-        """Load model based on file format"""
-        suffix = self.model_path.suffix.lower()
+        """Load model based on format."""
+        if self.format == 'onnx':
+            return self._load_onnx_model()
+        elif self.format == 'torchscript':
+            return self._load_torchscript_model()
+        elif self.format == 'tensorrt':
+            return self._load_tensorrt_model()
+    
+    def _load_onnx_model(self):
+        """Load ONNX model."""
+        try:
+            import onnxruntime as ort
+        except ImportError:
+            raise InferenceError("ONNX inference requires onnxruntime")
         
-        if suffix in ['.pth', '.pt']:
-            self._load_pytorch()
-        elif suffix == '.onnx' and ONNX_AVAILABLE:
-            self._load_onnx()
-        elif suffix == '.engine' and TENSORRT_AVAILABLE:
-            self._load_tensorrt()
+        # Set providers based on device
+        if self.device == 'cuda':
+            providers = ['CUDAExecutionProvider', 'CPUExecutionProvider']
         else:
-            raise ValueError(f"Unsupported model format: {suffix}")
+            providers = ['CPUExecutionProvider']
+        
+        # Create inference session
+        session = ort.InferenceSession(str(self.model_path), providers=providers)
+        
+        return session
     
-    def _load_pytorch(self):
-        """Load PyTorch or TorchScript model"""
-        logger.info(f"Loading PyTorch model from {self.model_path}")
+    def _load_torchscript_model(self):
+        """Load TorchScript model."""
+        model = torch.jit.load(str(self.model_path))
+        model.eval()
         
-        if self.model_path.name.endswith(('_traced.pt', '_scripted.pt')):
-            # TorchScript model
-            self.model = torch.jit.load(str(self.model_path))
-            self.model_type = 'torchscript'
-        else:
-            # Regular PyTorch model
-            checkpoint = torch.load(self.model_path, map_location=self.device)
-            
-            # Extract model state dict
-            if 'model_state_dict' in checkpoint:
-                raise ValueError(
-                    "PyTorch checkpoint found but model class not provided. "
-                    "Use TorchScript format for standalone inference."
-                )
-            else:
-                # Assume it's a TorchScript model
-                self.model = torch.jit.load(str(self.model_path))
-                self.model_type = 'torchscript'
+        # Move to device
+        if self.device == 'cuda':
+            model = model.cuda()
         
-        self.model.eval()
-        self.model.to(self.device)
+        # Extract metadata if available
+        if hasattr(model, 'dataset_version'):
+            self.dataset_version = model.dataset_version
+        if hasattr(model, 'num_classes'):
+            self.num_classes = model.num_classes
+        if hasattr(model, 'class_names'):
+            self.class_names = model.class_names
+        
+        return model
     
-    def _load_onnx(self):
-        """Load ONNX model"""
-        logger.info(f"Loading ONNX model from {self.model_path}")
-        
-        # Create ONNX runtime session
-        providers = ['CUDAExecutionProvider'] if self.device == 'cuda' else ['CPUExecutionProvider']
-        self.session = ort.InferenceSession(str(self.model_path), providers=providers)
-        self.model_type = 'onnx'
-        
-        # Get input/output info
-        self.input_name = self.session.get_inputs()[0].name
-        self.output_names = [o.name for o in self.session.get_outputs()]
-    
-    def _load_tensorrt(self):
-        """Load TensorRT engine"""
-        logger.info(f"Loading TensorRT engine from {self.model_path}")
+    def _load_tensorrt_model(self):
+        """Load TensorRT model."""
+        try:
+            import tensorrt as trt
+            import pycuda.driver as cuda
+            import pycuda.autoinit
+        except ImportError:
+            raise InferenceError("TensorRT inference requires tensorrt and pycuda")
         
         # Load engine
         with open(self.model_path, 'rb') as f:
-            runtime = trt.Runtime(trt.Logger(trt.Logger.WARNING))
-            self.engine = runtime.deserialize_cuda_engine(f.read())
+            engine_data = f.read()
         
-        self.context = self.engine.create_execution_context()
-        self.model_type = 'tensorrt'
+        runtime = trt.Runtime(trt.Logger(trt.Logger.WARNING))
+        engine = runtime.deserialize_cuda_engine(engine_data)
+        context = engine.create_execution_context()
         
-        # Setup buffers
-        self._setup_trt_buffers()
+        return {'engine': engine, 'context': context}
     
-    def _setup_trt_buffers(self):
-        """Setup TensorRT buffers"""
-        self.inputs, self.outputs, self.bindings = [], [], []
-        self.stream = torch.cuda.Stream()
+    def _setup_preprocessing(self):
+        """Setup image preprocessing pipeline."""
+        # Get input size from metadata or use default
+        input_size = self.metadata.get('input_size', 224)
         
-        for binding in self.engine:
-            size = trt.volume(self.engine.get_binding_shape(binding))
-            dtype = trt.nptype(self.engine.get_binding_dtype(binding))
-            
-            host_mem = np.empty(size, dtype=dtype)
-            device_mem = torch.cuda.ByteTensor(host_mem.nbytes)
-            
-            self.bindings.append(int(device_mem.data_ptr()))
-            
-            if self.engine.binding_is_input(binding):
-                self.inputs.append({'host': host_mem, 'device': device_mem})
-            else:
-                self.outputs.append({'host': host_mem, 'device': device_mem})
-    
-    def _warmup(self, num_runs: int = 3):
-        """Warm up model"""
-        logger.info("Warming up model...")
-        
-        dummy_input = torch.randn(1, *self.input_shape)
-        
-        for _ in range(num_runs):
-            _ = self.predict_tensor(dummy_input)
-    
-    def preprocess(self, image: Union[str, Path, Image.Image, np.ndarray]) -> torch.Tensor:
-        """
-        Preprocess image for inference
-        
-        Args:
-            image: Input image (path, PIL Image, or numpy array)
-            
-        Returns:
-            Preprocessed tensor
-        """
-        # Load image if path
-        if isinstance(image, (str, Path)):
-            image = Image.open(image).convert('RGB')
-        
-        # Convert to PIL if numpy
-        elif isinstance(image, np.ndarray):
-            if image.ndim == 2:  # Grayscale
-                image = np.stack([image] * 3, axis=-1)
-            image = Image.fromarray(image.astype(np.uint8))
-        
-        # Resize
-        size = (self.input_shape[1], self.input_shape[2])
-        image = image.resize(size, Image.Resampling.LANCZOS)
-        
-        # Convert to tensor
-        image = torch.from_numpy(np.array(image)).float()
-        image = image.permute(2, 0, 1)  # HWC -> CHW
-        
-        # Normalize to [0, 1]
-        image = image / 255.0
-        
-        # Apply normalization if requested
-        if self.normalize:
-            image = (image - self.mean) / self.std
-        
-        # Add batch dimension
-        return image.unsqueeze(0)
-    
-    def predict_tensor(self, input_tensor: torch.Tensor) -> torch.Tensor:
-        """
-        Run inference on tensor
-        
-        Args:
-            input_tensor: Input tensor (B, C, H, W)
-            
-        Returns:
-            Output tensor
-        """
-        if self.model_type in ['pytorch', 'torchscript']:
-            return self._predict_pytorch(input_tensor)
-        elif self.model_type == 'onnx':
-            return self._predict_onnx(input_tensor)
-        elif self.model_type == 'tensorrt':
-            return self._predict_tensorrt(input_tensor)
-    
-    def _predict_pytorch(self, input_tensor: torch.Tensor) -> torch.Tensor:
-        """PyTorch/TorchScript inference"""
-        input_tensor = input_tensor.to(self.device)
-        
-        with torch.no_grad():
-            output = self.model(input_tensor)
-        
-        return output
-    
-    def _predict_onnx(self, input_tensor: torch.Tensor) -> torch.Tensor:
-        """ONNX inference"""
-        # Convert to numpy
-        input_numpy = input_tensor.cpu().numpy()
-        
-        # Run inference
-        outputs = self.session.run(
-            self.output_names,
-            {self.input_name: input_numpy}
-        )
-        
-        # Convert back to tensor
-        return torch.from_numpy(outputs[0])
-    
-    def _predict_tensorrt(self, input_tensor: torch.Tensor) -> torch.Tensor:
-        """TensorRT inference"""
-        # Prepare input
-        input_numpy = input_tensor.cpu().numpy().ravel()
-        self.inputs[0]['host'] = input_numpy
-        
-        # Transfer to device
-        with self.stream:
-            self.inputs[0]['device'].copy_(
-                torch.from_numpy(self.inputs[0]['host']).cuda()
-            )
-            
-            # Run inference
-            self.context.execute_async_v2(
-                bindings=self.bindings,
-                stream_handle=self.stream.cuda_stream
-            )
-            
-            # Transfer outputs
-            for out in self.outputs:
-                torch.cuda.memcpy_async(
-                    out['host'], out['device'],
-                    out['host'].nbytes,
-                    torch.cuda.memcpyDeviceToHost,
-                    self.stream
-                )
-            
-            self.stream.synchronize()
-        
-        # Reshape and convert to tensor
-        output_shape = input_tensor.shape[0], -1  # Batch size, features
-        output = self.outputs[0]['host'].reshape(output_shape)
-        
-        return torch.from_numpy(output)
+        # Use standard eval transforms
+        return get_eval_transforms(input_size=input_size)
     
     def predict(
         self,
-        image: Union[str, Path, Image.Image, np.ndarray],
-        return_probs: bool = True
-    ) -> Dict[str, Any]:
+        images: Union[str, Path, Image.Image, np.ndarray, List],
+        return_probabilities: bool = True,
+        return_features: bool = False,
+        check_critical: bool = True
+    ) -> Union[Dict, List[Dict]]:
         """
-        Run inference on image
+        Run inference on input images.
         
         Args:
-            image: Input image
-            return_probs: Whether to return probabilities
+            images: Input image(s) - path, PIL Image, numpy array, or list
+            return_probabilities: Whether to return class probabilities
+            return_features: Whether to return feature embeddings
+            check_critical: Whether to check for critical conditions
             
         Returns:
-            Dictionary with predictions
+            Prediction dictionary or list of dictionaries
         """
-        # Preprocess
-        input_tensor = self.preprocess(image)
-        
-        # Predict
-        start_time = time.time()
-        output = self.predict_tensor(input_tensor)
-        inference_time = time.time() - start_time
-        
-        # Process output
-        if return_probs:
-            probs = torch.softmax(output, dim=1)
-            pred_class = probs.argmax(dim=1).item()
-            confidence = probs[0, pred_class].item()
-            
-            result = {
-                'predicted_class': pred_class,
-                'confidence': confidence,
-                'probabilities': probs[0].cpu().numpy().tolist(),
-                'inference_time_ms': inference_time * 1000
-            }
+        # Handle single image
+        if not isinstance(images, list):
+            images = [images]
+            single_image = True
         else:
-            result = {
-                'logits': output[0].cpu().numpy().tolist(),
-                'inference_time_ms': inference_time * 1000
-            }
+            single_image = False
         
-        return result
-    
-    def benchmark(
-        self,
-        input_shape: Optional[Tuple[int, ...]] = None,
-        batch_sizes: List[int] = [1, 4, 8, 16, 32],
-        num_runs: int = 100,
-        warmup_runs: int = 10
-    ) -> Dict[int, Dict[str, float]]:
-        """
-        Benchmark model performance
+        # Preprocess images
+        processed_images = []
+        image_metadata = []
         
-        Args:
-            input_shape: Input shape (defaults to model's shape)
-            batch_sizes: Batch sizes to test
-            num_runs: Number of benchmark runs
-            warmup_runs: Number of warmup runs
-            
-        Returns:
-            Benchmark results per batch size
-        """
-        if input_shape is None:
-            input_shape = self.input_shape
+        for img in images:
+            processed, metadata = self._preprocess_image(img)
+            processed_images.append(processed)
+            image_metadata.append(metadata)
         
-        results = {}
-        
-        for batch_size in batch_sizes:
-            logger.info(f"Benchmarking batch size {batch_size}...")
+        # Batch inference
+        results = []
+        for i in range(0, len(processed_images), self.batch_size):
+            batch = processed_images[i:i + self.batch_size]
+            batch_metadata = image_metadata[i:i + self.batch_size]
             
-            # Create dummy input
-            dummy_input = torch.randn(batch_size, *input_shape)
-            
-            # Warmup
-            for _ in range(warmup_runs):
-                _ = self.predict_tensor(dummy_input)
-            
-            # Benchmark
-            times = []
-            for _ in range(num_runs):
-                start_time = time.perf_counter()
-                _ = self.predict_tensor(dummy_input)
-                
+            # Stack into batch tensor
+            if self.format == 'onnx':
+                batch_tensor = np.stack(batch)
+            else:
+                batch_tensor = torch.stack([torch.from_numpy(img) for img in batch])
                 if self.device == 'cuda':
-                    torch.cuda.synchronize()
-                
-                end_time = time.perf_counter()
-                times.append((end_time - start_time) * 1000)  # ms
+                    batch_tensor = batch_tensor.cuda()
             
-            times = np.array(times)
+            # Run inference
+            outputs = self._run_inference(batch_tensor, return_features)
             
-            results[batch_size] = {
-                'mean_ms': np.mean(times),
-                'std_ms': np.std(times),
-                'min_ms': np.min(times),
-                'max_ms': np.max(times),
-                'p95_ms': np.percentile(times, 95),
-                'p99_ms': np.percentile(times, 99),
-                'throughput_fps': (batch_size * 1000) / np.mean(times)
+            # Process outputs
+            batch_results = self._process_outputs(
+                outputs, 
+                batch_metadata,
+                return_probabilities,
+                return_features,
+                check_critical
+            )
+            
+            results.extend(batch_results)
+        
+        # Return single result if single image
+        return results[0] if single_image else results
+    
+    def _preprocess_image(self, image: Union[str, Path, Image.Image, np.ndarray]) -> Tuple[np.ndarray, Dict]:
+        """Preprocess single image."""
+        metadata = {}
+        
+        # Load image if path
+        if isinstance(image, (str, Path)):
+            image_path = Path(image)
+            metadata['path'] = str(image_path)
+            metadata['filename'] = image_path.name
+            image = Image.open(image_path).convert('RGB')
+        elif isinstance(image, np.ndarray):
+            # Convert numpy to PIL
+            if image.dtype != np.uint8:
+                image = (image * 255).astype(np.uint8)
+            image = Image.fromarray(image)
+        elif not isinstance(image, Image.Image):
+            raise InferenceError(f"Unsupported image type: {type(image)}")
+        
+        # Store original size
+        metadata['original_size'] = image.size
+        
+        # Apply transforms
+        transformed = self.transform(image)
+        
+        # Convert to numpy
+        if isinstance(transformed, torch.Tensor):
+            transformed = transformed.numpy()
+        
+        return transformed, metadata
+    
+    def _run_inference(self, batch: Union[np.ndarray, torch.Tensor], return_features: bool) -> Dict:
+        """Run model inference on batch."""
+        if self.format == 'onnx':
+            return self._run_onnx_inference(batch)
+        elif self.format == 'torchscript':
+            return self._run_torchscript_inference(batch, return_features)
+        elif self.format == 'tensorrt':
+            return self._run_tensorrt_inference(batch)
+    
+    def _run_onnx_inference(self, batch: np.ndarray) -> Dict:
+        """Run ONNX inference."""
+        input_name = self.model.get_inputs()[0].name
+        outputs = self.model.run(None, {input_name: batch})
+        
+        return {'logits': outputs[0]}
+    
+    def _run_torchscript_inference(self, batch: torch.Tensor, return_features: bool) -> Dict:
+        """Run TorchScript inference."""
+        with torch.no_grad():
+            outputs = self.model(batch)
+        
+        # Handle different output formats
+        if isinstance(outputs, dict):
+            return outputs
+        else:
+            # Assume outputs are logits
+            result = {'logits': outputs}
+            
+            # Try to get features if requested
+            if return_features and hasattr(self.model, 'forward_features'):
+                features = self.model.forward_features(batch)
+                result['features'] = features
+            
+            return result
+    
+    def _run_tensorrt_inference(self, batch: Union[np.ndarray, torch.Tensor]) -> Dict:
+        """Run TensorRT inference."""
+        # Convert to numpy if needed
+        if isinstance(batch, torch.Tensor):
+            batch = batch.cpu().numpy()
+        
+        # Implementation depends on TensorRT Python API
+        # This is a placeholder
+        raise NotImplementedError("TensorRT inference not fully implemented")
+    
+    def _process_outputs(
+        self,
+        outputs: Dict,
+        metadata: List[Dict],
+        return_probabilities: bool,
+        return_features: bool,
+        check_critical: bool
+    ) -> List[Dict]:
+        """Process model outputs into results."""
+        # Get logits
+        logits = outputs['logits']
+        if isinstance(logits, np.ndarray):
+            logits = torch.from_numpy(logits)
+        
+        # Compute probabilities
+        probabilities = F.softmax(logits, dim=-1)
+        
+        # Get predictions
+        predictions = logits.argmax(dim=-1)
+        
+        # Process each sample
+        results = []
+        for i, (pred, probs) in enumerate(zip(predictions, probabilities)):
+            result = {
+                'predicted_class_idx': int(pred),
+                'predicted_class': self.class_names[int(pred)],
+                'confidence': float(probs[pred]),
+                'metadata': metadata[i]
             }
+            
+            # Add probabilities if requested
+            if return_probabilities:
+                result['probabilities'] = {
+                    self.class_names[j]: float(probs[j])
+                    for j in range(self.num_classes)
+                }
+                
+                # Add top-5 predictions
+                top5_probs, top5_indices = torch.topk(probs, min(5, self.num_classes))
+                result['top5_predictions'] = [
+                    {
+                        'class': self.class_names[int(idx)],
+                        'probability': float(prob)
+                    }
+                    for prob, idx in zip(top5_probs, top5_indices)
+                ]
+            
+            # Add features if available and requested
+            if return_features and 'features' in outputs:
+                features = outputs['features'][i]
+                if isinstance(features, torch.Tensor):
+                    features = features.cpu().numpy()
+                result['features'] = features
+            
+            # Check for critical conditions
+            if check_critical and self.dataset_version == "v6.1":
+                result['critical_analysis'] = self._check_critical_conditions(
+                    int(pred), probs
+                )
+            
+            # Add modality info for v6.1
+            if self.dataset_version == "v6.1":
+                if int(pred) < 18:
+                    result['modality'] = 'fundus'
+                else:
+                    result['modality'] = 'oct'
+            
+            results.append(result)
         
         return results
-
-
-def create_inference_script(
-    model_name: str,
-    input_shape: Tuple[int, ...],
-    available_formats: List[Any],
-    metadata: Dict[str, Any]
-) -> str:
-    """
-    Create standalone inference script
     
-    Args:
-        model_name: Name of the model
-        input_shape: Input shape (C, H, W)
-        available_formats: Available model formats
-        metadata: Model metadata
+    def _check_critical_conditions(self, predicted_class: int, probabilities: torch.Tensor) -> Dict:
+        """Check for critical conditions in prediction."""
+        analysis = {
+            'is_critical': False,
+            'critical_conditions_detected': []
+        }
         
-    Returns:
-        Inference script content
-    """
-    # Convert format enums to strings
-    format_strings = [f.value if hasattr(f, 'value') else str(f) for f in available_formats]
-    
-    script = f'''#!/usr/bin/env python3
-"""
-Inference script for {model_name}
-Auto-generated by RETFound Export System
-"""
-
-import argparse
-import json
-from pathlib import Path
-import time
-import numpy as np
-import torch
-from PIL import Image
-
-# Model configuration
-MODEL_NAME = "{model_name}"
-INPUT_SHAPE = {input_shape}
-NORMALIZE_MEAN = {metadata.get('normalize_mean', [0.5, 0.5, 0.5])}
-NORMALIZE_STD = {metadata.get('normalize_std', [0.5, 0.5, 0.5])}
-CLASS_NAMES = {metadata.get('class_names', [])}
-
-
-class InferenceModel:
-    """Simple inference wrapper"""
-    
-    def __init__(self, model_path, device='cuda'):
-        self.model_path = Path(model_path)
-        self.device = device if torch.cuda.is_available() else 'cpu'
+        # Check if predicted class is critical
+        predicted_class_name = self.class_names[predicted_class]
+        if predicted_class_name in CRITICAL_CONDITIONS:
+            analysis['is_critical'] = True
+            condition_info = CRITICAL_CONDITIONS[predicted_class_name].copy()
+            condition_info['probability'] = float(probabilities[predicted_class])
+            analysis['critical_conditions_detected'].append({
+                'condition': predicted_class_name,
+                **condition_info
+            })
         
-        # Load model
-        if self.model_path.suffix in ['.pt', '.pth']:
-            self.model = torch.jit.load(str(model_path))
-            self.model.eval()
-            self.model.to(self.device)
+        # Check for other critical conditions with high probability
+        for condition_name, info in CRITICAL_CONDITIONS.items():
+            if condition_name in self.class_names and condition_name != predicted_class_name:
+                class_idx = self.class_names.index(condition_name)
+                prob = float(probabilities[class_idx])
+                
+                # Flag if probability is above threshold (e.g., 0.1)
+                if prob > 0.1:
+                    analysis['critical_conditions_detected'].append({
+                        'condition': condition_name,
+                        'probability': prob,
+                        **info
+                    })
+        
+        # Sort by severity and probability
+        if analysis['critical_conditions_detected']:
+            analysis['critical_conditions_detected'].sort(
+                key=lambda x: (x['severity'], x['probability']),
+                reverse=True
+            )
+            analysis['recommendation'] = self._get_recommendation(
+                analysis['critical_conditions_detected'][0]
+            )
+        
+        return analysis
+    
+    def _get_recommendation(self, condition_info: Dict) -> str:
+        """Get recommendation based on condition severity and urgency."""
+        severity = condition_info['severity']
+        urgency = condition_info['urgency']
+        
+        if severity == 'critical' or urgency == 'immediate':
+            return "URGENT: Immediate ophthalmological evaluation required"
+        elif severity == 'high' or urgency == 'urgent':
+            return "Schedule urgent ophthalmological consultation within 24-48 hours"
+        elif severity == 'moderate':
+            return "Schedule ophthalmological evaluation within 1-2 weeks"
         else:
-            raise ValueError(f"Unsupported format: {{self.model_path.suffix}}")
-        
-        # Normalization
-        self.mean = torch.tensor(NORMALIZE_MEAN).view(3, 1, 1)
-        self.std = torch.tensor(NORMALIZE_STD).view(3, 1, 1)
+            return "Monitor condition and schedule routine ophthalmological follow-up"
     
-    def preprocess(self, image_path):
-        """Preprocess image"""
-        # Load and resize
-        image = Image.open(image_path).convert('RGB')
-        image = image.resize((INPUT_SHAPE[1], INPUT_SHAPE[2]), Image.Resampling.LANCZOS)
+    def predict_batch(
+        self,
+        image_paths: List[Union[str, Path]],
+        save_results: bool = True,
+        output_path: Optional[str] = None
+    ) -> List[Dict]:
+        """
+        Run batch prediction on multiple images.
         
-        # Convert to tensor
-        image = torch.from_numpy(np.array(image)).float()
-        image = image.permute(2, 0, 1) / 255.0
+        Args:
+            image_paths: List of image paths
+            save_results: Whether to save results to file
+            output_path: Path to save results
+            
+        Returns:
+            List of prediction dictionaries
+        """
+        logger.info(f"Running batch prediction on {len(image_paths)} images...")
         
-        # Normalize
-        image = (image - self.mean) / self.std
+        # Run predictions
+        results = self.predict(image_paths, return_probabilities=True)
         
-        return image.unsqueeze(0)
-    
-    def predict(self, image_path):
-        """Run prediction"""
-        # Preprocess
-        input_tensor = self.preprocess(image_path).to(self.device)
-        
-        # Predict
-        start_time = time.time()
-        with torch.no_grad():
-            output = self.model(input_tensor)
-        inference_time = time.time() - start_time
-        
-        # Process output
-        probs = torch.softmax(output, dim=1)
-        pred_class = probs.argmax(dim=1).item()
-        confidence = probs[0, pred_class].item()
-        
-        result = {{
-            'image': str(image_path),
-            'predicted_class': pred_class,
-            'predicted_label': CLASS_NAMES[pred_class] if CLASS_NAMES else f"Class {{pred_class}}",
-            'confidence': confidence,
-            'inference_time_ms': inference_time * 1000
-        }}
-        
-        return result
-
-
-def main():
-    parser = argparse.ArgumentParser(description=f'Inference for {{MODEL_NAME}}')
-    parser.add_argument('input', help='Input image or directory')
-    parser.add_argument('--model', default=f'{{MODEL_NAME}}_traced.pt', help='Model file')
-    parser.add_argument('--device', default='cuda', choices=['cuda', 'cpu'])
-    parser.add_argument('--output', help='Output JSON file')
-    parser.add_argument('--batch', action='store_true', help='Process directory')
-    
-    args = parser.parse_args()
-    
-    # Initialize model
-    model = InferenceModel(args.model, args.device)
-    
-    # Process input
-    input_path = Path(args.input)
-    
-    if args.batch and input_path.is_dir():
-        # Process directory
-        results = []
-        image_files = list(input_path.glob('*.jpg')) + list(input_path.glob('*.png'))
-        
-        print(f"Processing {{len(image_files)}} images...")
-        for image_file in image_files:
-            result = model.predict(image_file)
-            results.append(result)
-            print(f"{{image_file.name}}: {{result['predicted_label']}} ({{result['confidence']:.2%}})")
-        
-        # Save results
-        if args.output:
-            with open(args.output, 'w') as f:
+        # Save results if requested
+        if save_results:
+            if output_path is None:
+                output_path = "predictions.json"
+            
+            with open(output_path, 'w') as f:
                 json.dump(results, f, indent=2)
-    
-    else:
-        # Single image
-        result = model.predict(input_path)
-        print(f"\\nPrediction: {{result['predicted_label']}}")
-        print(f"Confidence: {{result['confidence']:.2%}}")
-        print(f"Inference time: {{result['inference_time_ms']:.1f}} ms")
+            
+            logger.info(f"Saved predictions to {output_path}")
         
-        if args.output:
-            with open(args.output, 'w') as f:
-                json.dump(result, f, indent=2)
-
-
-if __name__ == '__main__':
-    main()
-'''
-    
-    return script
-
-
-def benchmark_inference(
-    model_path: Union[str, Path],
-    input_shape: Tuple[int, ...] = (3, 224, 224),
-    batch_sizes: List[int] = [1, 4, 8, 16, 32],
-    device: str = 'cuda',
-    num_runs: int = 100
-) -> Dict[str, Any]:
-    """
-    Benchmark inference performance
-    
-    Args:
-        model_path: Path to model
-        input_shape: Input shape
-        batch_sizes: Batch sizes to test
-        device: Device to run on
-        num_runs: Number of runs per batch size
+        # Log summary
+        class_counts = {}
+        critical_count = 0
         
-    Returns:
-        Benchmark results
-    """
-    logger.info(f"Benchmarking {model_path}")
-    
-    # Create inference model
-    model = InferenceModel(model_path, device=device, input_shape=input_shape)
-    
-    # Run benchmark
-    results = model.benchmark(
-        input_shape=input_shape,
-        batch_sizes=batch_sizes,
-        num_runs=num_runs
-    )
-    
-    # Summary
-    logger.info("\nBenchmark Results:")
-    logger.info(f"{'Batch':>6} {'Mean (ms)':>10} {'Std (ms)':>10} {'FPS':>10}")
-    logger.info("-" * 40)
-    
-    for batch_size, stats in results.items():
-        logger.info(
-            f"{batch_size:>6} {stats['mean_ms']:>10.2f} "
-            f"{stats['std_ms']:>10.2f} {stats['throughput_fps']:>10.1f}"
-        )
-    
-    return {
-        'model_path': str(model_path),
-        'model_type': model.model_type,
-        'device': device,
-        'input_shape': input_shape,
-        'results': results
-    }
+        for result in results:
+            pred_class = result['predicted_class']
+            class_counts[pred_class] = class_counts.get(pred_class, 0) + 1
+            
+            if result.get('critical_analysis', {}).get('is_critical', False):
+                critical_count += 1
+        
+        logger.info("Prediction summary:")
+        for class_name, count in sorted(class_counts.items(), key=lambda x: x[1], reverse=True):
+            logger.info(f"  {class_name}: {count}")
+        
+        if critical_count > 0:
+            logger.warning(f"Found {critical_count} images with critical conditions!")
+        
+        return results

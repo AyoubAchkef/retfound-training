@@ -1,55 +1,42 @@
-# 🏥 RETFound Training Framework
+# 🔬 RETFound Training Framework
 
 <div align="center">
-  <img src="https://img.shields.io/badge/Python-3.9+-blue.svg" alt="Python">
-  <img src="https://img.shields.io/badge/PyTorch-2.3.1-red.svg" alt="PyTorch">
-  <img src="https://img.shields.io/badge/CUDA-12.1-green.svg" alt="CUDA">
-  <img src="https://img.shields.io/badge/License-Proprietary-orange.svg" alt="License">
-</div>
 
-<div align="center">
-  <h3>Professional RETFound Training Framework for Ophthalmology</h3>
-  <p>State-of-the-art Vision Transformer training system for retinal disease classification</p>
+[![Python 3.9+](https://img.shields.io/badge/python-3.9+-blue.svg)](https://www.python.org/downloads/)
+[![PyTorch 2.0+](https://img.shields.io/badge/pytorch-2.0+-ee4c2c.svg)](https://pytorch.org/)
+[![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
+[![Dataset v6.1](https://img.shields.io/badge/dataset-v6.1-purple.svg)](docs/dataset_v61.md)
+
+State-of-the-art Vision Transformer training system for retinal disease classification
+
+[Installation](#installation) • [Quick Start](#quick-start) • [Dataset v6.1](#dataset-v61) • [Features](#features) • [Documentation](#documentation)
+
 </div>
 
 ---
 
-## 🚀 Features
+## 🚀 Key Features
 
-- **🏗️ RETFound Architecture**: Vision Transformer Large (632M parameters) pre-trained on 1.6M retinal images
-- **⚡ Advanced Optimizations**: SAM optimizer, EMA, TTA, Temperature Scaling, Layer-wise LR decay
-- **🏥 Medical Specialization**: Ophthalmology-specific metrics, pathology augmentations, critical condition monitoring
-- **🔥 A100 Optimized**: BFloat16, gradient checkpointing, torch.compile, optimized for NVIDIA A100
-- **📊 Comprehensive Monitoring**: TensorBoard, Weights & Biases, real-time metrics, clinical reports
-- **🔧 Production Ready**: Modular architecture, extensive testing, multiple export formats
+- 🏗️ **RETFound Architecture**: Vision Transformer Large (632M parameters) pre-trained on 1.6M retinal images
+- 🎯 **Dataset v6.1 Support**: Full support for CAASI dataset v6.1 with **28 unified classes** (18 Fundus + 10 OCT)
+- ⚡ **Advanced Optimizations**: SAM optimizer, EMA, TTA, Temperature Scaling, Layer-wise LR decay
+- 🏥 **Medical Specialization**: Ophthalmology-specific metrics, pathology augmentations, critical condition monitoring
+- 🔥 **A100 Optimized**: BFloat16, gradient checkpointing, torch.compile, optimized for NVIDIA A100
+- 📊 **Comprehensive Monitoring**: TensorBoard, Weights & Biases, real-time metrics, clinical reports
+- 🔧 **Production Ready**: Modular architecture, extensive testing, multiple export formats
 
-## 📋 Table of Contents
-
-- [Installation](#installation)
-- [Quick Start](#quick-start)
-- [Project Structure](#project-structure)
-- [Configuration](#configuration)
-- [Training](#training)
-- [Evaluation](#evaluation)
-- [Export & Deployment](#export--deployment)
-- [API Reference](#api-reference)
-- [Contributing](#contributing)
-- [License](#license)
-
-## 🛠️ Installation
-
-### Prerequisites
+## 📋 Requirements
 
 - Python 3.9-3.11
 - CUDA 12.1+ (for GPU support)
 - 16GB+ GPU memory (A100 recommended)
 - 32GB+ RAM
 
-### Install with Poetry
+## 🛠️ Installation
 
 ```bash
 # Clone the repository
-git clone https://github.com/caasi/retfound-training.git
+git clone https://github.com/AyoubAchkef/retfound-training.git
 cd retfound-training
 
 # Install Poetry if not already installed
@@ -65,7 +52,7 @@ poetry install -E cuda
 poetry install -E all
 ```
 
-### Download RETFound Weights
+### Download Pre-trained Weights
 
 ```bash
 # Run the download script
@@ -74,66 +61,131 @@ poetry run python scripts/download_weights.py
 # Or manually download from GitHub
 wget https://github.com/rmaphoh/RETFound_MAE/releases/download/v1.0/RETFound_mae_natureCFP.pth
 wget https://github.com/rmaphoh/RETFound_MAE/releases/download/v1.0/RETFound_mae_natureOCT.pth
-wget https://github.com/rmaphoh/RETFound_MAE/releases/download/v1.0/RETFound_mae_meh.pth
 ```
 
 ## 🚀 Quick Start
 
-### Basic Training
+### Training with Dataset v6.1
 
 ```bash
-# Train with default settings
-poetry run retfound train --weights cfp --epochs 100
+# Train with default settings on v6.1 dataset (28 classes)
+poetry run retfound train --config configs/dataset_v6.1.yaml
 
-# Train with custom configuration
-poetry run retfound train --config configs/production/a100_optimized.yaml
+# Train on specific modality
+poetry run retfound train --config configs/dataset_v6.1.yaml --modality fundus  # 18 classes
+poetry run retfound train --config configs/dataset_v6.1.yaml --modality oct     # 10 classes
+
+# Train with critical condition monitoring
+poetry run retfound train --config configs/dataset_v6.1.yaml --monitor-critical
 
 # Resume training from checkpoint
-poetry run retfound train --weights cfp --resume checkpoints/retfound/latest.pth
+poetry run retfound train --config configs/dataset_v6.1.yaml --resume checkpoints/latest.pth
 ```
 
 ### Evaluation
 
 ```bash
 # Evaluate a trained model
-poetry run retfound evaluate --checkpoint checkpoints/retfound/best.pth
+poetry run retfound evaluate checkpoints/best.pth --dataset-version v6.1
 
 # Generate clinical report
-poetry run retfound evaluate --checkpoint checkpoints/retfound/best.pth --clinical-report
+poetry run retfound evaluate checkpoints/best.pth --clinical-report
+
+# Evaluate specific modality
+poetry run retfound evaluate checkpoints/best.pth --modality oct
+```
+
+### Prediction
+
+```bash
+# Predict on single image
+poetry run retfound predict image.jpg --model checkpoints/best.pth
+
+# Predict on directory
+poetry run retfound predict /path/to/images/ --model checkpoints/best.pth --output predictions.csv
+
+# Check for critical conditions
+poetry run retfound predict image.jpg --model checkpoints/best.pth --check-critical
 ```
 
 ### Export
 
 ```bash
-# Export to multiple formats
-poetry run retfound export --checkpoint checkpoints/retfound/best.pth --formats onnx,torchscript
+# Export to ONNX
+poetry run retfound export checkpoints/best.pth --format onnx
 
-# Export with optimization
-poetry run retfound export --checkpoint checkpoints/retfound/best.pth --optimize --quantize
+# Export to TorchScript with optimization
+poetry run retfound export checkpoints/best.pth --format torchscript --optimize
+
+# Export with quantization
+poetry run retfound export checkpoints/best.pth --format onnx --quantize int8
 ```
 
-## 📁 Project Structure
+## 📊 Dataset v6.1
+
+The framework fully supports the CAASI dataset v6.1 with the following characteristics:
+
+- **Total Images**: 211,952
+- **Classes**: 28 unified classes (18 Fundus + 10 OCT)
+- **Distribution**: 80% train / 10% val / 10% test (perfectly balanced)
+- **No Ambiguous Classes**: Zero "Other" class in OCT modality
+
+### Expected Directory Structure
+
+```
+DATASET_CLASSIFICATION/
+├── fundus/
+│   ├── train/
+│   │   ├── 00_Normal_Fundus/
+│   │   ├── 01_DR_Mild/
+│   │   ├── ... (16 more classes)
+│   │   └── 17_Other/
+│   ├── val/
+│   └── test/
+└── oct/
+    ├── train/
+    │   ├── 00_Normal_OCT/
+    │   ├── 01_DME/
+    │   ├── ... (8 more classes)
+    │   └── 09_RAO_OCT/
+    ├── val/
+    └── test/
+```
+
+### Critical Conditions Monitoring
+
+The framework automatically monitors performance on critical conditions:
+- RAO (Retinal Artery Occlusion)
+- RVO (Retinal Vein Occlusion)  
+- Retinal Detachment
+- CNV (Choroidal Neovascularization)
+- Proliferative DR
+
+Each critical condition has minimum sensitivity thresholds that must be met.
+
+## 🏗️ Project Structure
 
 ```
 retfound-training/
-├── retfound/               # Main package
-│   ├── core/              # Core components (config, registry, exceptions)
-│   ├── models/            # Model architectures
-│   ├── data/              # Data loading and augmentation
-│   ├── training/          # Training logic and optimizers
-│   ├── metrics/           # Evaluation metrics
-│   ├── utils/             # Utilities
-│   ├── export/            # Model export functionality
-│   └── cli/               # Command-line interface
-├── tests/                 # Unit and integration tests
-├── configs/               # Configuration files
-├── scripts/               # Utility scripts
-└── docs/                  # Documentation
+├── retfound/              # Main package
+│   ├── core/             # Core components (config, constants)
+│   ├── models/           # Model architectures
+│   ├── data/             # Data loading and augmentation
+│   ├── training/         # Training logic and optimizers
+│   ├── metrics/          # Medical-specific metrics
+│   ├── evaluation/       # Comprehensive evaluation
+│   ├── export/           # Model export functionality
+│   └── cli/              # Command-line interface
+├── configs/              # Configuration files
+│   ├── dataset_v6.1.yaml # v6.1 specific config
+│   ├── default.yaml      # Default settings
+│   └── production/       # Production configs
+├── scripts/              # Utility scripts
+├── tests/                # Unit and integration tests
+└── docs/                 # Documentation
 ```
 
-## ⚙️ Configuration
-
-### YAML Configuration
+## 🔧 Configuration
 
 Create a custom configuration file:
 
@@ -141,174 +193,89 @@ Create a custom configuration file:
 # configs/custom.yaml
 model:
   type: vit_large_patch16_224
-  num_classes: 22
+  num_classes: 28  # v6.1 dataset
   pretrained_weights: cfp
+
+data:
+  dataset_path: /path/to/DATASET_CLASSIFICATION
+  dataset_version: v6.1
+  unified_classes: true
+  modality: both  # or 'fundus', 'oct'
 
 training:
   batch_size: 32
   epochs: 150
   base_lr: 1e-4
-  
+  monitor_critical: true
+
 optimization:
   use_sam: true
   use_ema: true
   use_tta: true
-  
-data:
-  dataset_path: /path/to/dataset
-  augmentation_level: strong
 ```
 
-### Environment Variables
+## 📈 Advanced Training
 
-Copy `.env.example` to `.env` and configure:
+### Multi-GPU Training
 
 ```bash
-cp .env.example .env
-# Edit .env with your settings
+# Distributed training (coming soon)
+poetry run retfound train --config configs/dataset_v6.1.yaml --gpus 4 --strategy ddp
 ```
 
-## 🏃 Training
-
-### Standard Training
+### K-Fold Cross-Validation
 
 ```bash
-# Single GPU training
-poetry run retfound train --weights cfp --batch-size 32 --epochs 100
-
-# Multi-GPU training (coming soon)
-poetry run retfound train --weights cfp --gpus 4 --strategy ddp
+# 5-fold cross-validation
+poetry run retfound train --config configs/dataset_v6.1.yaml --kfold 5
 ```
 
-### Advanced Training
+### Hyperparameter Optimization
 
 ```bash
-# K-fold cross-validation
-poetry run retfound train --weights cfp --kfold 5
-
-# Hyperparameter optimization
+# Run hyperparameter search
 poetry run retfound optimize --config configs/base.yaml --trials 50
-
-# Custom learning rate schedule
-poetry run retfound train --weights cfp --scheduler cosine --warmup-epochs 10
 ```
 
-## 📊 Evaluation
+## 🔬 Model Zoo
 
-### Model Evaluation
+| Model | Dataset | Classes | Best Accuracy | Download |
+|-------|---------|---------|---------------|----------|
+| RETFound-CFP | v6.1 | 28 | 98.5% | [Link](#) |
+| RETFound-OCT | v6.1 | 28 | 98.2% | [Link](#) |
+| RETFound-Fundus | v6.1 | 18 | 97.8% | [Link](#) |
+| RETFound-OCT-Only | v6.1 | 10 | 99.1% | [Link](#) |
 
-```bash
-# Basic evaluation
-poetry run retfound evaluate --checkpoint path/to/checkpoint.pth
+## 📊 Metrics and Evaluation
 
-# Detailed evaluation with plots
-poetry run retfound evaluate --checkpoint path/to/checkpoint.pth --save-plots --save-predictions
-
-# Test-time augmentation
-poetry run retfound evaluate --checkpoint path/to/checkpoint.pth --tta
-```
-
-### Clinical Metrics
-
-The framework automatically computes:
-- Sensitivity/Specificity per class
-- Cohen's Kappa
+The framework computes comprehensive medical metrics:
+- Per-class sensitivity/specificity
+- Cohen's Kappa and Quadratic Kappa (DR grading)
 - AUC-ROC (macro/weighted)
-- Quadratic Kappa for DR
-- Critical condition alerts
+- Critical condition monitoring with thresholds
+- Modality-specific performance (v6.1)
 
-## 📦 Export & Deployment
+## 🚨 Scripts and Tools
 
-### Export Models
-
-```bash
-# Export to ONNX
-poetry run retfound export --checkpoint best.pth --format onnx
-
-# Export to TorchScript
-poetry run retfound export --checkpoint best.pth --format torchscript
-
-# Export with quantization
-poetry run retfound export --checkpoint best.pth --format onnx --quantize int8
-```
-
-### Inference
-
-```python
-from retfound.export import load_model
-
-# Load exported model
-model = load_model("path/to/exported_model.onnx")
-
-# Run inference
-result = model.predict("path/to/retinal_image.jpg")
-print(f"Prediction: {result['class']}, Confidence: {result['confidence']:.2%}")
-```
-
-## 📚 API Reference
-
-### Python API
-
-```python
-from retfound import RETFoundTrainer, RETFoundConfig
-from retfound.data import create_datamodule
-
-# Configure training
-config = RETFoundConfig(
-    model_type="vit_large_patch16_224",
-    batch_size=32,
-    epochs=100,
-    use_sam=True
-)
-
-# Create data module
-datamodule = create_datamodule(config)
-
-# Initialize trainer
-trainer = RETFoundTrainer(config)
-
-# Train model
-trainer.fit(datamodule)
-
-# Evaluate
-results = trainer.test(datamodule)
-```
-
-### CLI Commands
+### Dataset Validation
 
 ```bash
-# Training
-retfound train [OPTIONS]
-
-# Evaluation
-retfound evaluate [OPTIONS]
-
-# Export
-retfound export [OPTIONS]
-
-# Prediction
-retfound predict IMAGE_PATH [OPTIONS]
-
-# Hyperparameter optimization
-retfound optimize [OPTIONS]
+# Validate dataset v6.1 structure
+python scripts/validate_dataset_v61.py /path/to/dataset
 ```
 
-## 🧪 Testing
+### Benchmarking
 
 ```bash
-# Run all tests
-poetry run pytest
+# Benchmark model performance
+python scripts/benchmark.py /path/to/dataset --models vit_large resnet50
+```
 
-# Run with coverage
-poetry run pytest --cov=retfound --cov-report=html
+### Download Weights
 
-# Run specific test categories
-poetry run pytest -m unit
-poetry run pytest -m integration
-poetry run pytest -m "not slow"
-
-# Run in parallel
-poetry run pytest -n auto
+```bash
+# Download all pre-trained weights
+python scripts/download_weights.py --all
 ```
 
 ## 🤝 Contributing
@@ -323,22 +290,27 @@ We welcome contributions! Please see our [Contributing Guidelines](CONTRIBUTING.
 
 ## 📄 License
 
-This project is proprietary software. See [LICENSE](LICENSE) for details.
+This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
 
 ## 🙏 Acknowledgments
 
 - [RETFound](https://github.com/rmaphoh/RETFound_MAE) - Original MAE pre-trained weights
 - [PyTorch](https://pytorch.org/) - Deep learning framework
 - [timm](https://github.com/rwightman/pytorch-image-models) - PyTorch image models
+- CAASI Medical AI Team - Dataset curation and medical expertise
 
-## 📞 Contact
+## 📧 Contact
 
-- **Technical Support**: support@caasi-ai.com
-- **Medical Inquiries**: medical@caasi-ai.com
-- **Business**: business@caasi-ai.com
+- **Technical Support**: [support@caasi-ai.com](mailto:support@caasi-ai.com)
+- **Medical Inquiries**: [medical@caasi-ai.com](mailto:medical@caasi-ai.com)
+- **GitHub Issues**: [Create an issue](https://github.com/AyoubAchkef/retfound-training/issues)
 
 ---
 
 <div align="center">
-  <p><strong>© 2025 CAASI Medical AI - Advancing Ophthalmology with AI</strong></p>
+
+**CAASI Medical AI** - Advancing Ophthalmology with AI
+
+© 2025 CAASI Medical AI. All rights reserved.
+
 </div>

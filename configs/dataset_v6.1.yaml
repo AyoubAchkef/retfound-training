@@ -1,0 +1,243 @@
+# Configuration for CAASI Dataset v6.1
+# Total: 211,952 images (44,815 Fundus + 167,137 OCT)
+# 28 classes total (18 Fundus + 10 OCT)
+
+# Dataset paths - Choose based on your environment
+# For Windows local:
+dataset_path: "D:\\DATASET_CLASSIFICATION"
+
+# For RunPod:
+# dataset_path: "/workspace/datasets/DATASET_CLASSIFICATION"
+
+# For Google Drive on Colab/RunPod:
+# dataset_path: "/content/drive/MyDrive/CAASI-DATASET/DATASET_CLASSIFICATION"
+
+# Output paths
+output_path: "./outputs/v6.1"
+checkpoint_path: "./checkpoints/v6.1"
+cache_dir: "./cache/v6.1"
+
+# Dataset specific configuration
+dataset:
+  name: "caasi_v61"
+  modality: "both"  # Options: "fundus", "oct", "both"
+  unified_classes: true  # Use 28-class unified system
+  use_cache: true
+  return_metadata: false
+  
+  # Data augmentation
+  use_pathology_augmentation: true
+  
+  # Class balancing
+  balanced_sampling: true
+  
+  # Validation
+  val_frequency: 1  # Validate every epoch
+  
+# Model configuration
+model:
+  type: "vit_large_patch16_224"  # RETFound Large (default)
+  num_classes: 28  # Will be auto-updated based on modality
+  input_size: 224
+  patch_size: 16
+  
+  # RETFound specific
+  pretrained_weights: "cfp"  # Options: "cfp", "oct", "meh"
+  # For mixed modality training, we recommend starting with CFP weights
+  
+  # Model modifications
+  drop_path_rate: 0.2
+  drop_rate: 0.0
+  
+# RETFound weights paths
+weights_paths:
+  cfp: "./weights/RETFound_mae_natureCFP.pth"
+  oct: "./weights/RETFound_mae_natureOCT.pth"
+  meh: "./weights/RETFound_mae_meh.pth"
+
+# Training configuration
+training:
+  # Batch sizes (adjust based on GPU memory)
+  batch_size: 16          # For single A100 40GB
+  gradient_accumulation: 4  # Effective batch size = 64
+  
+  # For different GPUs:
+  # V100 16GB: batch_size: 8, gradient_accumulation: 8
+  # A100 80GB: batch_size: 32, gradient_accumulation: 2
+  # RTX 3090: batch_size: 8, gradient_accumulation: 8
+  
+  # Epochs
+  epochs: 100
+  early_stopping_patience: 20
+  early_stopping_min_delta: 0.001
+  
+  # Checkpointing
+  save_frequency: 5  # Save every 5 epochs
+  save_best_only: false
+  save_last: true
+
+# Optimizer configuration
+optimizer:
+  type: "adamw"
+  base_lr: 5e-5          # Good for RETFound fine-tuning
+  min_lr: 1e-7
+  weight_decay: 0.05
+  adam_epsilon: 1e-8
+  adam_betas: [0.9, 0.999]
+  gradient_clip: 1.0
+  
+  # Layer-wise learning rate decay (important for ViT)
+  layer_decay: 0.75
+  
+  # Learning rate schedule
+  scheduler:
+    type: "cosine"
+    warmup_epochs: 5
+    warmup_lr: 1e-7
+
+# Advanced optimizations
+optimizations:
+  # SAM (Sharpness Aware Minimization)
+  use_sam: true
+  sam_rho: 0.05
+  sam_adaptive: true
+  
+  # EMA (Exponential Moving Average)
+  use_ema: true
+  ema_decay: 0.9999
+  ema_update_after_step: 100
+  ema_update_every: 10
+  
+  # Mixed precision
+  use_amp: true
+  amp_dtype: "bfloat16"  # For A100. Use "float16" for other GPUs
+  
+  # Gradient checkpointing (saves memory)
+  use_gradient_checkpointing: true
+  
+  # Compile model (PyTorch 2.0+)
+  use_compile: true
+  compile_mode: "default"  # Options: "default", "reduce-overhead", "max-autotune"
+
+# Loss configuration
+loss:
+  type: "cross_entropy"  # Dataset is well balanced in v6.1
+  label_smoothing: 0.1
+  
+  # Alternative for imbalanced scenarios
+  # type: "focal"
+  # focal_gamma: 2.0
+  # focal_alpha: null  # Will be computed from class weights
+
+# Data augmentation
+augmentation:
+  # MixUp
+  use_mixup: true
+  mixup_alpha: 0.8
+  mixup_prob: 0.5
+  
+  # CutMix
+  use_cutmix: true
+  cutmix_alpha: 1.0
+  cutmix_prob: 0.5
+  
+  # RandAugment
+  use_randaugment: true
+  randaugment_n: 2
+  randaugment_m: 9
+  
+  # Test-Time Augmentation
+  use_tta: true
+  tta_augmentations: 5
+
+# Monitoring and logging
+logging:
+  log_interval: 50  # Log every 50 batches
+  use_tensorboard: true
+  use_wandb: true
+  wandb_project: "caasi-retfound-v61"
+  wandb_entity: null  # Set your W&B entity
+  
+  # Metrics to track
+  track_metrics: [
+    "loss", "accuracy", "auc_macro", "auc_weighted",
+    "mean_sensitivity", "mean_specificity", "cohen_kappa"
+  ]
+
+# Distributed training (for multi-GPU)
+distributed:
+  enabled: false
+  backend: "nccl"
+  init_method: "env://"
+
+# Data loading
+dataloader:
+  num_workers: 8
+  pin_memory: true
+  persistent_workers: true
+  prefetch_factor: 2
+
+# Validation configuration
+validation:
+  # Metrics for model selection
+  monitor_metric: "auc_macro"  # Best for medical imaging
+  monitor_mode: "max"  # Maximize AUC
+  
+  # Additional validation
+  compute_confusion_matrix: true
+  compute_roc_curves: true
+  save_predictions: false
+
+# Testing configuration
+testing:
+  # Test on best or last checkpoint
+  use_best_checkpoint: true
+  
+  # Test-time augmentation
+  use_tta: true
+  
+  # Save test predictions
+  save_predictions: true
+  save_probability_maps: false
+
+# Export configuration
+export:
+  formats: ["torchscript", "onnx"]
+  optimize_for_inference: true
+  
+  # ONNX specific
+  onnx_opset_version: 14
+  onnx_dynamic_axes: true
+
+# Environment specific overrides
+env_configs:
+  local_windows:
+    dataset_path: "D:\\DATASET_CLASSIFICATION"
+    cache_dir: "D:\\caasi_cache\\v6.1"
+    dataloader:
+      num_workers: 0  # Windows multiprocessing issues
+  
+  runpod:
+    dataset_path: "/workspace/datasets/DATASET_CLASSIFICATION"
+    output_path: "/workspace/outputs/v6.1"
+    checkpoint_path: "/workspace/checkpoints/v6.1"
+    cache_dir: "/workspace/cache/v6.1"
+    dataloader:
+      num_workers: 12
+  
+  colab:
+    dataset_path: "/content/drive/MyDrive/CAASI-DATASET/DATASET_CLASSIFICATION"
+    batch_size: 8  # Limited GPU memory
+    gradient_accumulation: 8
+
+# Random seed for reproducibility
+seed: 42
+
+# Notes for dataset v6.1
+notes: |
+  - Dataset v6.1 features perfect 80/10/10 split balance
+  - 18 Fundus classes + 10 OCT classes = 28 total
+  - No "Other" class in OCT (100% medical diagnosis)
+  - Post-augmentation class weights applied for minority classes:
+    * OCT: ERM (2.0), RVO_OCT (2.0), RAO_OCT (1.5)
+    * Fundus: Myopia_Degenerative (1.5)
