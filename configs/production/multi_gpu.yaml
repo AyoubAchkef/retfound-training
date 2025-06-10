@@ -1,0 +1,261 @@
+# Multi-GPU Production Configuration
+# ==================================
+# Configuration for distributed training across multiple GPUs
+# Supports both DDP (Distributed Data Parallel) and FSDP (Fully Sharded Data Parallel)
+
+# Model Architecture
+# -----------------
+model_type: vit_large_patch16_224
+patch_size: 16
+embed_dim: 1024
+depth: 24
+num_heads: 16
+mlp_ratio: 4.0
+drop_path_rate: 0.2
+drop_rate: 0.0
+
+# Dataset Configuration
+# --------------------
+num_classes: 22
+input_size: 224
+pixel_mean: [0.5, 0.5, 0.5]
+pixel_std: [0.5, 0.5, 0.5]
+
+# Multi-GPU Training Parameters
+# ----------------------------
+# Batch size per GPU
+batch_size: 16  # Per GPU batch size
+gradient_accumulation: 2  # Less accumulation with multiple GPUs
+epochs: 100
+
+# Global batch size calculation:
+# global_batch_size = batch_size * num_gpus * gradient_accumulation
+# Example: 16 * 8 * 2 = 256
+
+# Learning Rate Scaling
+# --------------------
+# Scale learning rate with global batch size
+base_lr: 5.0e-5
+lr_scaling: linear  # Options: linear, sqrt, none
+lr_scaling_factor: 1.0  # Auto-calculated based on GPUs
+min_lr: 1.0e-6
+warmup_epochs: 10
+warmup_lr: 1.0e-7
+layer_decay: 0.65
+
+# Distributed Training Configuration
+# ---------------------------------
+distributed:
+  enabled: true
+  backend: nccl  # Best for NVIDIA GPUs
+  init_method: env://  # Environment variable initialization
+  
+  # DDP Configuration
+  ddp:
+    find_unused_parameters: false
+    static_graph: true  # Optimize for static model
+    gradient_as_bucket_view: true
+    broadcast_buffers: true
+    bucket_cap_mb: 25
+    
+  # FSDP Configuration (alternative to DDP)
+  fsdp:
+    enabled: false  # Set true to use FSDP instead of DDP
+    sharding_strategy: FULL_SHARD  # Options: FULL_SHARD, SHARD_GRAD_OP, NO_SHARD
+    cpu_offload: false  # Offload to CPU (for very large models)
+    auto_wrap_policy: transformer_auto_wrap
+    min_num_params: 1e6  # Minimum parameters to wrap
+    backward_prefetch: BACKWARD_PRE
+    forward_prefetch: true
+    mixed_precision: true
+    
+  # Communication Settings
+  world_size: 8  # Number of GPUs (auto-detected)
+  rank: 0  # Process rank (auto-assigned)
+  local_rank: 0  # Local GPU rank (auto-assigned)
+  
+  # NCCL Settings
+  nccl:
+    async_error_handling: true
+    timeout_ms: 1800000  # 30 minutes
+    debug: false  # Set true for debugging
+
+# Multi-GPU Optimization
+# ---------------------
+# Mixed Precision
+use_amp: true
+amp_dtype: float16  # FP16 reduces communication overhead
+amp_grad_scaler: true  # Required for FP16
+
+# Gradient Synchronization
+gradient_sync:
+  sync_frequency: 1  # Sync every N steps
+  all_reduce_algorithm: Ring  # Options: Ring, Tree, Auto
+  compression: none  # Options: none, fp16, powerSGD
+  
+# torch.compile with DDP
+use_compile: true
+compile_mode: default  # max-autotune can cause issues with DDP
+compile_backend: inductor
+compile_distributed: true  # Special handling for distributed
+
+# SyncBatchNorm
+sync_batchnorm: true  # Convert BN to SyncBN
+affine_batchnorm: true
+
+# Data Loading for Multi-GPU
+# -------------------------
+# Each GPU needs its own data loader
+num_workers: 4  # Per GPU
+pin_memory: true
+persistent_workers: true
+prefetch_factor: 2
+drop_last: true  # Important for equal batch sizes
+
+# Distributed Sampler
+distributed_sampler:
+  shuffle: true
+  seed: 42
+  drop_last: true
+  
+# Data Sharding
+data_sharding:
+  enabled: true
+  shard_per_gpu: true
+  cache_dataset: false  # Don't cache with large datasets
+
+# Communication Optimization
+# -------------------------
+# Gradient Bucketing
+gradient_bucketing:
+  enabled: true
+  bucket_size_mb: 25
+  
+# Gradient Compression
+gradient_compression:
+  enabled: false  # Enable for slower networks
+  algorithm: powerSGD
+  rank: 2  # PowerSGD rank
+  
+# Overlap Communication
+overlap_comm_compute: true
+pin_comm_memory: true
+
+# Checkpointing Strategy
+# ---------------------
+# Only save from rank 0
+save_on_rank_0_only: true
+checkpoint_save_async: true
+save_frequency: 10
+
+# Distributed checkpoint format
+use_distributed_checkpoint: false  # Set true for FSDP
+checkpoint_consolidation: true  # Consolidate sharded checkpoints
+
+# Load Balancing
+# -------------
+# Dynamic loss scaling per GPU
+dynamic_loss_scale:
+  enabled: true
+  init_scale: 65536
+  growth_factor: 2.0
+  backoff_factor: 0.5
+  growth_interval: 2000
+
+# Monitoring for Multi-GPU
+# -----------------------
+log_interval: 50  # Less frequent due to multiple processes
+log_rank_0_only: true  # Only log from main process
+use_tensorboard: true
+use_wandb: true
+
+# Per-GPU metrics
+track_per_gpu_stats: true
+log_grad_norm_per_gpu: false  # Can be expensive
+
+# Multi-GPU Specific Features
+# --------------------------
+# Model Parallelism (if needed)
+model_parallel:
+  enabled: false
+  pipeline_parallel: false
+  tensor_parallel: false
+  
+# ZeRO Optimization (for FSDP)
+zero_optimization:
+  stage: 2  # 0: Disabled, 1: Optimizer states, 2: Gradients, 3: Parameters
+  contiguous_gradients: true
+  reduce_bucket_size: 5e8
+  
+# Elastic Training
+elastic_training:
+  enabled: false
+  min_nodes: 1
+  max_nodes: 4
+  
+# Fault Tolerance
+fault_tolerance:
+  enabled: true
+  checkpoint_frequency: 1000  # Steps
+  auto_resume: true
+  ignore_worker_failures: false
+
+# Performance Tuning
+# -----------------
+# CUDA Settings
+cudnn_benchmark: true
+cudnn_deterministic: false
+
+# Memory Management
+empty_cache_frequency: 0  # Disable for multi-GPU
+gc_collect_frequency: 0  # Let Python handle it
+
+# Environment Variables
+# --------------------
+# Set these before launching:
+# export MASTER_ADDR=localhost
+# export MASTER_PORT=29500
+# export WORLD_SIZE=8
+# export RANK=0  # Different for each process
+# export LOCAL_RANK=0  # GPU index on node
+# export CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7
+# export OMP_NUM_THREADS=8
+# export NCCL_IB_DISABLE=0
+# export NCCL_P2P_DISABLE=0
+# export NCCL_SOCKET_IFNAME=eth0
+
+# Launch Commands
+# --------------
+# Single node, multiple GPUs:
+# torchrun --nproc_per_node=8 train.py --config multi_gpu.yaml
+
+# Multiple nodes:
+# torchrun --nproc_per_node=8 --nnodes=2 --node_rank=0 --master_addr=10.0.0.1 --master_port=29500 train.py
+
+# With SLURM:
+# srun --nodes=2 --ntasks-per-node=8 --gpus-per-task=1 train.py
+
+# Expected Performance
+# -------------------
+# 8x A100 80GB GPUs:
+# - Global batch size: 256
+# - Training throughput: 800-1000 images/second
+# - Time per epoch: ~1 minute (50k images)
+# - Linear scaling up to 8 GPUs
+# - 90%+ scaling efficiency
+
+# Common Issues and Solutions
+# --------------------------
+# 1. Timeout errors: Increase nccl.timeout_ms
+# 2. OOM on some GPUs: Check batch size consistency
+# 3. Slow communication: Enable NCCL_IB_DISABLE=0
+# 4. Hanging: Check firewall/network settings
+# 5. Uneven memory: Enable gradient checkpointing
+
+# Notes
+# -----
+# - Test on single GPU first
+# - Profile communication overhead
+# - Monitor GPU utilization per device
+# - Use NVIDIA tools for optimization
+# - Consider topology-aware process placement

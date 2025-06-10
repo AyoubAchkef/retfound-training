@@ -1,0 +1,186 @@
+# A100 Optimized Production Configuration
+# =======================================
+# Configuration optimized for NVIDIA A100 80GB GPU
+# Maximizes training speed and GPU utilization
+
+# Model Architecture
+# -----------------
+model_type: vit_large_patch16_224
+patch_size: 16
+embed_dim: 1024
+depth: 24
+num_heads: 16
+mlp_ratio: 4.0
+drop_path_rate: 0.2
+drop_rate: 0.0
+
+# Dataset Configuration
+# --------------------
+num_classes: 22
+input_size: 224
+pixel_mean: [0.5, 0.5, 0.5]
+pixel_std: [0.5, 0.5, 0.5]
+
+# A100-Optimized Training Parameters
+# ---------------------------------
+batch_size: 32  # A100 can handle larger batches
+gradient_accumulation: 4  # Effective batch size = 128
+epochs: 100
+
+# Learning Rate Configuration
+# --------------------------
+base_lr: 1.0e-4  # Higher LR with larger batch
+min_lr: 1.0e-6
+warmup_epochs: 10
+warmup_lr: 1.0e-7
+layer_decay: 0.65
+
+# Optimizer Configuration
+# ----------------------
+optimizer: adamw
+adam_epsilon: 1.0e-8
+adam_betas: [0.9, 0.999]
+weight_decay: 0.05
+gradient_clip: 1.0
+
+# A100-Specific Optimizations
+# --------------------------
+# Mixed Precision with BFloat16
+use_amp: true
+amp_dtype: bfloat16  # A100 has native BF16 support
+amp_grad_scaler: false  # Not needed with BF16
+
+# torch.compile Optimization
+use_compile: true
+compile_mode: max-autotune  # Maximum optimization for A100
+compile_backend: inductor  # Best backend for A100
+compile_fullgraph: true  # Compile entire model
+compile_dynamic: false  # Static shapes for better optimization
+
+# Memory Optimization
+use_gradient_checkpointing: false  # Not needed with 80GB
+empty_cache_frequency: 100  # Clear cache every N batches
+
+# A100 Tensor Core Optimization
+# ----------------------------
+# Ensure tensor dimensions are multiples of 8 for Tensor Core usage
+tensor_core_optimization:
+  enabled: true
+  pad_vocabulary: true  # Pad embedding dimensions
+  optimize_attention: true  # Optimize attention for Tensor Cores
+  channel_last_format: false  # NCHW better for ViT
+
+# CUDA Optimization
+# ----------------
+cudnn_benchmark: true
+cudnn_deterministic: false
+cuda_amp_backend: native  # Use native AMP backend
+
+# Multi-GPU Settings (if available)
+# --------------------------------
+distributed:
+  enabled: false  # Set to true for multi-GPU
+  backend: nccl
+  init_method: env://
+  find_unused_parameters: false
+  
+# A100 Data Loading Optimization
+# -----------------------------
+num_workers: 16  # More workers for A100's bandwidth
+pin_memory: true
+persistent_workers: true
+prefetch_factor: 4  # Increased prefetching
+non_blocking_transfer: true
+
+# Advanced A100 Features
+# ---------------------
+# CUDA Graphs (experimental)
+use_cuda_graphs: false  # Enable for static models
+cuda_graph_warmup: 10  # Warmup iterations
+
+# Memory Pool Configuration
+memory_pool:
+  enabled: true
+  max_split_size_mb: 512
+  roundup_power2_divisions: 8
+
+# NCCL Optimization (for multi-GPU)
+nccl_optimization:
+  NCCL_IB_DISABLE: 0
+  NCCL_P2P_DISABLE: 0
+  NCCL_TREE_THRESHOLD: 0
+
+# Optimizations Trade-offs
+# -----------------------
+use_sam: true  # Can afford SAM on A100
+sam_rho: 0.05
+use_ema: true  # Minimal overhead on A100
+use_tta: true  # For validation only
+
+# Fast Augmentations
+# -----------------
+use_gpu_augmentations: true  # GPU-accelerated augmentations
+augmentation_batch_size: 64  # Process augmentations in larger batches
+
+# Monitoring Configuration
+# -----------------------
+log_interval: 20  # Less frequent logging for speed
+use_tensorboard: true
+use_wandb: true
+profile_training: false  # Disable profiling for production
+
+# Checkpointing Strategy
+# ---------------------
+save_frequency: 10
+keep_last_n_checkpoints: 3
+checkpoint_save_async: true  # Asynchronous checkpoint saving
+
+# Performance Targets for A100
+# ---------------------------
+# Expected performance with this configuration:
+# - Training throughput: 120-150 images/second
+# - GPU utilization: >90%
+# - Memory usage: 40-60GB
+# - Time per epoch: ~3-4 minutes (50k images)
+
+# A100 Troubleshooting
+# -------------------
+# If experiencing issues:
+# 1. OOM: Unlikely with 80GB, check for memory leaks
+# 2. Low GPU utilization: Increase batch size or num_workers
+# 3. Slow training: Check data loading pipeline
+# 4. Compile errors: Disable use_compile or change mode
+
+# Environment Variables for A100
+# -----------------------------
+# Set these before running:
+# export CUDA_DEVICE_ORDER=PCI_BUS_ID
+# export PYTORCH_CUDA_ALLOC_CONF=max_split_size_mb:512
+# export CUDA_LAUNCH_BLOCKING=0
+# export CUDNN_BENCHMARK=1
+# export NCCL_IB_DISABLE=0  # Enable InfiniBand if available
+# export OMP_NUM_THREADS=8
+
+# Power and Thermal Management
+# ---------------------------
+gpu_power_limit: 400  # Watts (A100 default)
+temperature_target: 80  # Celsius
+fan_control: auto
+
+# Advanced Compiler Flags
+# ----------------------
+# For maximum performance (use with caution)
+torch_compile_options:
+  epilogue_fusion: true
+  max_autotune_gemm: true
+  aggressive_fusion: true
+  shape_padding: true
+  triton.cudagraphs: true
+
+# Notes
+# -----
+# - This configuration assumes A100 80GB SXM4
+# - Adjust batch_size for A100 40GB variant
+# - Enable distributed training for multi-GPU setups
+# - Monitor temperature and power consumption
+# - Use NVIDIA tools (nvidia-smi, nvprof) for optimization

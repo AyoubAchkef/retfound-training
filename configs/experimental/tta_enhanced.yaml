@@ -1,0 +1,253 @@
+# TTA Enhanced Experimental Configuration
+# =======================================
+# Configuration focused on Test-Time Augmentation experiments
+# Optimized for maximum inference accuracy at the cost of speed
+
+# Base Model Configuration
+# -----------------------
+model_type: vit_large_patch16_224
+num_classes: 22
+input_size: 224
+
+# Training Configuration
+# ---------------------
+# Standard training parameters - TTA is mainly for inference
+batch_size: 16
+gradient_accumulation: 8
+epochs: 100
+
+# Learning Rate Configuration
+# --------------------------
+base_lr: 5.0e-5
+min_lr: 1.0e-6
+warmup_epochs: 10
+layer_decay: 0.65
+
+# Optimizer Configuration
+# ----------------------
+use_sam: true  # SAM + TTA gives best results
+sam_rho: 0.05
+use_ema: true  # EMA model typically better for TTA
+
+# Enhanced Training Augmentations
+# ------------------------------
+# Train with diverse augmentations to prepare for TTA
+use_mixup: true
+mixup_alpha: 0.8
+use_cutmix: true
+cutmix_alpha: 1.0
+mixup_prob: 0.5
+cutmix_prob: 0.5
+use_pathology_augmentation: true
+
+# Additional Training Augmentations for TTA Robustness
+# ---------------------------------------------------
+train_augmentations:
+  # Geometric augmentations
+  random_rotate:
+    enabled: true
+    degrees: 15
+    
+  random_scale:
+    enabled: true
+    scale_range: [0.8, 1.2]
+    
+  random_crop_resize:
+    enabled: true
+    scale: [0.7, 1.0]
+    ratio: [0.8, 1.2]
+    
+  # Color augmentations
+  color_jitter:
+    enabled: true
+    brightness: 0.4
+    contrast: 0.4
+    saturation: 0.4
+    hue: 0.1
+    
+  # Advanced augmentations
+  elastic_transform:
+    enabled: true
+    alpha: 120
+    sigma: 6
+    
+  grid_distortion:
+    enabled: true
+    distort_limit: 0.3
+    
+  optical_distortion:
+    enabled: true
+    distort_limit: 0.5
+
+# Test-Time Augmentation Configuration
+# -----------------------------------
+use_tta: true
+tta_augmentations: 10  # Number of augmented versions per image
+
+# TTA Transform Set
+# ----------------
+tta_transforms:
+  # Original image (always included)
+  - name: original
+    enabled: true
+    
+  # Horizontal flip
+  - name: horizontal_flip
+    enabled: true
+    
+  # Vertical flip
+  - name: vertical_flip
+    enabled: true
+    
+  # 90-degree rotations
+  - name: rotate_90
+    enabled: true
+    
+  - name: rotate_180
+    enabled: true
+    
+  - name: rotate_270
+    enabled: true
+    
+  # Scale variations
+  - name: scale_zoom_in
+    enabled: true
+    scale: 0.9
+    
+  - name: scale_zoom_out
+    enabled: true
+    scale: 1.1
+    
+  # Brightness variations
+  - name: brightness_increase
+    enabled: true
+    factor: 1.2
+    
+  - name: brightness_decrease
+    enabled: true
+    factor: 0.8
+    
+  # Contrast variations
+  - name: contrast_increase
+    enabled: true
+    factor: 1.2
+    
+  - name: contrast_decrease
+    enabled: true
+    factor: 0.8
+    
+  # Color channel shuffle (for robustness)
+  - name: channel_shuffle
+    enabled: true
+    probability: 0.5
+
+# TTA Aggregation Methods
+# ----------------------
+tta_aggregation:
+  # Method for combining predictions
+  method: weighted_average  # Options: mean, weighted_average, voting, max
+  
+  # Weights for weighted average (learned or predefined)
+  weight_strategy: confidence  # Options: uniform, confidence, learned
+  
+  # Temperature scaling for confidence weighting
+  temperature: 1.5
+  
+  # Ensemble prediction threshold
+  confidence_threshold: 0.7
+
+# Advanced TTA Features
+# --------------------
+# Multi-scale TTA
+multiscale_tta:
+  enabled: true
+  scales: [0.8, 0.9, 1.0, 1.1, 1.2]
+  
+# Color space TTA
+color_space_tta:
+  enabled: false  # Experimental
+  spaces: [RGB, LAB, HSV]
+  
+# Model ensemble TTA
+ensemble_tta:
+  enabled: false
+  models: []  # List of checkpoint paths
+
+# TTA Optimization
+# ---------------
+tta_optimization:
+  # Batch processing for TTA
+  tta_batch_size: 4  # Process multiple augmentations in parallel
+  
+  # Cache augmented images
+  cache_augmentations: true
+  
+  # Use GPU for augmentations
+  gpu_augmentations: true
+  
+  # Parallel augmentation workers
+  augmentation_workers: 4
+
+# Pathology-Specific TTA
+# ---------------------
+pathology_specific_tta:
+  # Different TTA strategies for different pathologies
+  diabetic_retinopathy:
+    extra_rotations: true
+    focus_on_hemorrhages: true
+    
+  glaucoma:
+    disc_centered_crops: true
+    enhance_cup_disc_ratio: true
+    
+  amd:
+    drusen_enhancement: true
+    macular_focus: true
+
+# TTA Validation Strategy
+# ----------------------
+# Validate with TTA during training (expensive but informative)
+validate_with_tta: true
+tta_validation_frequency: 10  # Every N epochs
+tta_validation_subset: 0.1  # Use 10% of validation set for TTA
+
+# Model Export for TTA
+# -------------------
+export_tta_config: true  # Export TTA configuration with model
+export_optimized_tta: true  # Export optimized TTA pipeline
+
+# Hardware Optimization
+# --------------------
+use_amp: true
+amp_dtype: float16  # FP16 faster for multiple forward passes
+use_compile: false  # Disable for flexibility
+use_gradient_checkpointing: false  # Not needed for inference
+
+# Monitoring TTA Performance
+# -------------------------
+log_tta_predictions: true  # Log individual augmentation predictions
+log_tta_agreement: true  # Log agreement between augmentations
+track_tta_time: true  # Track inference time with TTA
+
+# Expected Results with TTA
+# ------------------------
+# - Inference time: 5-10x slower (depending on augmentations)
+# - Accuracy improvement: +1-2% on average
+# - Robustness: Significantly better on difficult cases
+# - Best for: Final predictions where accuracy is critical
+# - Not recommended for: Real-time applications
+
+# TTA Usage Examples
+# -----------------
+# 1. Clinical deployment: Maximum accuracy for diagnosis
+# 2. Competition submissions: Squeeze out extra performance
+# 3. Difficult cases: When standard prediction confidence is low
+# 4. Quality assurance: Verify model predictions
+
+# Notes
+# -----
+# - TTA is particularly effective for medical imaging
+# - Geometric augmentations are most effective for retinal images
+# - Color augmentations help with device/lighting variations
+# - More augmentations ≠ always better (diminishing returns)
+# - Consider computational cost vs accuracy gain

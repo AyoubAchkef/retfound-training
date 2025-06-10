@@ -1,0 +1,131 @@
+retfound_training/
+├── pyproject.toml                    # Configuration Poetry et dépendances
+├── poetry.lock                       # Lock file pour versions exactes
+├── README.md                         # Documentation principale
+├── LICENSE                          # Licence du projet
+├── setup.cfg                        # Configuration outils (pytest, flake8, mypy)
+├── .gitignore                       # Fichiers à ignorer
+├── .env.example                     # Variables d'environnement exemple
+│
+├── retfound/                        # Package principal
+│   ├── __init__.py                 # Export de l'API publique
+│   ├── __version__.py              # Version du package
+│   │
+│   ├── core/                       # Composants centraux
+│   │   ├── __init__.py
+│   │   ├── config.py               # Configuration dataclass
+│   │   ├── constants.py            # Constantes globales
+│   │   ├── exceptions.py           # Exceptions personnalisées
+│   │   └── registry.py             # Registry pattern pour extensibilité
+│   │
+│   ├── models/                     # Architecture des modèles
+│   │   ├── __init__.py
+│   │   ├── base.py                 # Classe abstraite de base
+│   │   ├── retfound.py             # RETFoundModel
+│   │   ├── layers/                 # Couches personnalisées
+│   │   │   ├── __init__.py
+│   │   │   ├── attention.py        # Multi-head attention
+│   │   │   ├── blocks.py           # Transformer blocks
+│   │   │   └── embeddings.py       # Patch & position embeddings
+│   │   └── factory.py              # Model factory pattern
+│   │
+│   ├── data/                       # Gestion des données
+│   │   ├── __init__.py
+│   │   ├── datasets.py             # Dataset classes
+│   │   ├── datamodule.py           # Lightning-style DataModule
+│   │   ├── transforms.py           # Transformations & augmentations
+│   │   ├── samplers.py             # Custom samplers
+│   │   └── cache.py                # Système de cache
+│   │
+│   ├── training/                   # Logique d'entraînement
+│   │   ├── __init__.py
+│   │   ├── trainer.py              # Classe Trainer principale
+│   │   ├── optimizers.py           # SAM et autres optimizers
+│   │   ├── schedulers.py           # Learning rate schedulers
+│   │   ├── losses.py               # Loss functions
+│   │   ├── callbacks/              # Système de callbacks
+│   │   │   ├── __init__.py
+│   │   │   ├── base.py             # Callback interface
+│   │   │   ├── checkpoint.py       # Model checkpointing
+│   │   │   ├── early_stopping.py   # Early stopping
+│   │   │   ├── logging.py          # Logging callbacks
+│   │   │   └── metrics.py          # Metrics tracking
+│   │   └── strategies/             # Stratégies d'entraînement
+│   │       ├── __init__.py
+│   │       ├── base.py             # Strategy interface
+│   │       ├── ddp.py              # Distributed Data Parallel
+│   │       └── single_gpu.py       # Single GPU training
+│   │
+│   ├── metrics/                    # Métriques et évaluation
+│   │   ├── __init__.py
+│   │   ├── medical.py              # OphthalmologyMetrics
+│   │   ├── visualization.py        # Plots et graphiques
+│   │   └── reports.py              # Génération de rapports
+│   │
+│   ├── utils/                      # Utilitaires
+│   │   ├── __init__.py
+│   │   ├── io.py                   # I/O utilities
+│   │   ├── device.py               # GPU/CPU management
+│   │   ├── logging.py              # Logging configuration
+│   │   ├── timing.py               # Performance timing
+│   │   └── reproducibility.py      # Seed et reproducibilité
+│   │
+│   ├── export/                     # Export et déploiement
+│   │   ├── __init__.py
+│   │   ├── exporter.py             # Export manager
+│   │   ├── onnx.py                 # ONNX export
+│   │   ├── torchscript.py          # TorchScript export
+│   │   ├── tensorrt.py             # TensorRT export
+│   │   └── inference.py            # Inference utilities
+│   │
+│   └── cli/                        # Command Line Interface
+│       ├── __init__.py
+│       ├── main.py                 # Point d'entrée CLI
+│       ├── commands/               # Commandes CLI
+│       │   ├── __init__.py
+│       │   ├── train.py            # Commande train
+│       │   ├── evaluate.py         # Commande evaluate
+│       │   ├── export.py           # Commande export
+│       │   └── predict.py          # Commande predict
+│       └── utils.py                # CLI utilities
+│
+├── tests/                          # Tests unitaires et d'intégration
+│   ├── __init__.py
+│   ├── conftest.py                 # Fixtures pytest globales
+│   ├── unit/                       # Tests unitaires
+│   │   ├── __init__.py
+│   │   ├── test_config.py          # Tests configuration
+│   │   ├── test_models.py          # Tests modèles
+│   │   ├── test_datasets.py        # Tests datasets
+│   │   ├── test_optimizers.py      # Tests optimizers
+│   │   ├── test_losses.py          # Tests losses
+│   │   ├── test_metrics.py         # Tests metrics
+│   │   └── test_utils.py           # Tests utilities
+│   ├── integration/                # Tests d'intégration
+│   │   ├── __init__.py
+│   │   ├── test_training.py        # Tests training pipeline
+│   │   ├── test_export.py          # Tests export
+│   │   └── test_cli.py             # Tests CLI
+│   └── fixtures/                   # Données de test
+│       ├── __init__.py
+│       ├── sample_images/          # Images test
+│       └── configs/                # Configs test
+│
+├── scripts/                        # Scripts utilitaires
+│   ├── setup_environment.sh        # Setup environnement
+│   ├── download_weights.py         # Télécharger poids RETFound
+│   └── benchmark.py                # Script de benchmark
+│
+├── configs/                        # Configurations YAML
+│   ├── default.yaml                # Configuration par défaut
+│   ├── experimental/               # Configs expérimentales
+│   │   ├── sam_optimizer.yaml
+│   │   └── tta_enhanced.yaml
+│   └── production/                 # Configs production
+│       ├── a100_optimized.yaml
+│       └── multi_gpu.yaml
+│
+└── docs/                           # Documentation
+    ├── api/                        # Documentation API
+    ├── tutorials/                  # Tutoriels
+    └── examples/                   # Exemples d'utilisation

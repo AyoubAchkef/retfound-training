@@ -1,0 +1,169 @@
+# SAM Optimizer Experimental Configuration
+# ========================================
+# Configuration focused on Sharpness Aware Minimization (SAM) experiments
+# Inherits from default configuration with SAM-specific modifications
+
+# Base Configuration
+# -----------------
+# Inherits all settings from default.yaml
+# Override specific parameters below
+
+# Model Configuration
+# ------------------
+model_type: vit_large_patch16_224
+num_classes: 22
+input_size: 224
+
+# Training Configuration
+# ---------------------
+batch_size: 8  # Reduced due to SAM's double forward pass
+gradient_accumulation: 16  # Maintain effective batch size of 128
+epochs: 150  # More epochs for SAM convergence
+
+# Learning Rate for SAM
+# --------------------
+base_lr: 1.0e-4  # Higher LR works well with SAM
+min_lr: 1.0e-6
+warmup_epochs: 15  # Longer warmup for SAM
+warmup_lr: 1.0e-7
+layer_decay: 0.7  # Slightly higher decay
+
+# SAM Configuration
+# ----------------
+use_sam: true
+sam_rho: 0.05  # Neighborhood size (key hyperparameter)
+sam_adaptive: true  # Adaptive SAM (scales with parameter magnitude)
+
+# SAM Variants to Try
+# ------------------
+# Uncomment one of these configurations for different SAM variants:
+
+# Standard SAM
+# sam_rho: 0.05
+# sam_adaptive: false
+
+# Adaptive SAM (ASAM) - Better for Vision Transformers
+# sam_rho: 0.05
+# sam_adaptive: true
+
+# Large neighborhood SAM - More aggressive
+# sam_rho: 0.1
+# sam_adaptive: true
+
+# Small neighborhood SAM - More conservative
+# sam_rho: 0.02
+# sam_adaptive: true
+
+# Optimizer Base Configuration
+# ---------------------------
+optimizer: adamw
+adam_epsilon: 1.0e-8
+adam_betas: [0.9, 0.999]
+weight_decay: 0.1  # Higher weight decay with SAM
+gradient_clip: 0.5  # More aggressive clipping with SAM
+
+# Loss Configuration for SAM
+# -------------------------
+label_smoothing: 0.15  # More smoothing helps SAM
+use_focal_loss: false
+
+# EMA with SAM
+# -----------
+use_ema: true
+ema_decay: 0.99995  # Higher decay for stability
+ema_update_after_step: 200  # Wait longer before EMA
+ema_update_every: 5
+
+# Augmentation with SAM
+# --------------------
+# SAM benefits from stronger augmentation
+use_mixup: true
+mixup_alpha: 1.0  # Stronger mixup
+use_cutmix: true
+cutmix_alpha: 1.0
+mixup_prob: 0.6  # Higher probability
+cutmix_prob: 0.6
+use_pathology_augmentation: true
+
+# Hardware Optimization for SAM
+# ----------------------------
+use_amp: true
+amp_dtype: bfloat16  # BF16 more stable for SAM
+use_compile: false  # Disable compile for SAM (compatibility issues)
+use_gradient_checkpointing: true  # Essential for memory with SAM
+
+# Monitoring SAM Training
+# ----------------------
+log_interval: 5  # More frequent logging to monitor SAM
+use_tensorboard: true
+use_wandb: true
+wandb_project: retfound-sam-experiments
+
+# SAM-Specific Metrics to Track
+# ----------------------------
+# The trainer will automatically log:
+# - Gradient norm before/after SAM step
+# - Loss landscape sharpness estimates
+# - Weight perturbation magnitudes
+# - Convergence stability metrics
+
+# Learning Rate Schedule for SAM
+# -----------------------------
+# SAM often benefits from different LR schedules
+# Options: cosine, linear, polynomial, step
+lr_scheduler_type: cosine
+lr_scheduler_params:
+  eta_min: 1.0e-6
+  T_max: ${epochs}
+
+# Validation Strategy with SAM
+# ---------------------------
+val_frequency: 2  # Validate every 2 epochs (SAM is slower)
+save_frequency: 10
+
+# Early Stopping for SAM
+# ---------------------
+early_stopping_patience: 30  # More patience for SAM
+early_stopping_min_delta: 0.0005
+
+# Notes on SAM Training
+# --------------------
+# 1. SAM requires ~2x memory and ~2x compute per step
+# 2. Convergence is often slower but more stable
+# 3. Final performance is typically 1-3% better
+# 4. Works especially well with Vision Transformers
+# 5. Monitor gradient norms - they should be more stable with SAM
+
+# Experimental SAM Features
+# ------------------------
+# These are experimental and may not be stable:
+
+# SAM with different optimizers
+# sam_base_optimizer: sgd  # Try SAM with SGD base
+
+# Scheduled rho (neighborhood size)
+# sam_rho_schedule: linear  # Linear decay of rho
+# sam_rho_min: 0.01
+# sam_rho_max: 0.1
+
+# Per-layer SAM
+# sam_per_layer_rho: true
+# sam_layer_rho_scale: 0.5  # Scale rho by layer depth
+
+# Memory Optimization Tips
+# -----------------------
+# If running out of memory with SAM:
+# 1. Reduce batch_size to 4 and increase gradient_accumulation
+# 2. Enable use_gradient_checkpointing: true
+# 3. Disable use_compile: false
+# 4. Use amp_dtype: float16 instead of bfloat16
+# 5. Reduce sam_rho to 0.02 or 0.01
+
+# Expected Results with SAM
+# ------------------------
+# - Training time: ~2x slower than standard training
+# - Memory usage: ~1.5-2x higher
+# - Validation accuracy: +1-3% improvement
+# - Better generalization to out-of-distribution data
+# - More robust to adversarial examples
+# - Flatter loss landscape (better for deployment)

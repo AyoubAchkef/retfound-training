@@ -1,0 +1,155 @@
+# RETFound Default Configuration
+# ==============================
+# This is the default configuration file for RETFound training.
+# All parameters can be overridden via command line arguments.
+
+# Model Architecture
+# -----------------
+model_type: vit_large_patch16_224  # Vision Transformer Large
+patch_size: 16
+embed_dim: 1024
+depth: 24
+num_heads: 16
+mlp_ratio: 4.0
+drop_path_rate: 0.2
+drop_rate: 0.0
+
+# Dataset Configuration
+# --------------------
+num_classes: 22  # CAASI dataset has 22 classes
+input_size: 224  # Input image size
+pixel_mean: [0.5, 0.5, 0.5]  # RETFound normalization
+pixel_std: [0.5, 0.5, 0.5]
+
+# Training Parameters
+# ------------------
+batch_size: 16
+gradient_accumulation: 8  # Effective batch size = 128
+epochs: 100
+
+# Learning Rate Configuration
+# --------------------------
+base_lr: 5.0e-5  # Base learning rate
+min_lr: 1.0e-6   # Minimum learning rate
+warmup_epochs: 10
+warmup_lr: 1.0e-7
+layer_decay: 0.65  # Layer-wise LR decay
+
+# Optimizer Configuration
+# ----------------------
+optimizer: adamw
+adam_epsilon: 1.0e-8
+adam_betas: [0.9, 0.999]
+weight_decay: 0.05
+gradient_clip: 1.0
+
+# SAM (Sharpness Aware Minimization)
+# ----------------------------------
+use_sam: true
+sam_rho: 0.05
+sam_adaptive: true
+
+# EMA (Exponential Moving Average)
+# --------------------------------
+use_ema: true
+ema_decay: 0.9999
+ema_update_after_step: 100
+ema_update_every: 10
+
+# Loss Function
+# ------------
+label_smoothing: 0.1
+use_focal_loss: false  # Automatically enabled for imbalanced datasets
+focal_gamma: 2.0
+
+# Data Augmentation
+# ----------------
+use_mixup: true
+mixup_alpha: 0.8
+use_cutmix: true
+cutmix_alpha: 1.0
+mixup_prob: 0.5
+cutmix_prob: 0.5
+use_pathology_augmentation: true
+
+# Test-Time Augmentation
+# ---------------------
+use_tta: true
+tta_augmentations: 5
+
+# Validation Configuration
+# -----------------------
+val_frequency: 1  # Validate every N epochs
+save_frequency: 10  # Save checkpoint every N epochs
+
+# Hardware Optimization
+# --------------------
+use_amp: true  # Automatic Mixed Precision
+use_compile: true  # torch.compile (PyTorch 2.0+)
+compile_mode: default  # Options: default, reduce-overhead, max-autotune
+use_gradient_checkpointing: true  # Trade compute for memory
+cudnn_benchmark: true
+
+# Data Loading
+# -----------
+num_workers: 8
+pin_memory: true
+persistent_workers: true
+prefetch_factor: 2
+
+# Monitoring and Logging
+# ---------------------
+log_interval: 10  # Log every N batches
+use_tensorboard: true
+use_wandb: true
+wandb_project: caasi-retfound
+wandb_entity: null  # Set your W&B entity
+
+# Clinical Settings
+# ----------------
+use_class_weights: true  # Weight classes by frequency
+balance_dataset: true    # Use balanced sampling
+adaptive_sampling: true  # Adjust sampling during training
+
+# Model Calibration
+# ----------------
+use_temperature_scaling: true
+calibration_bins: 15
+
+# Early Stopping
+# -------------
+early_stopping_patience: 20
+early_stopping_min_delta: 0.001
+
+# Cross-Validation
+# ---------------
+use_kfold: false
+n_folds: 5
+
+# Model Export
+# -----------
+export_onnx: false
+export_torchscript: true
+export_tensorrt: false
+
+# Paths (can be overridden)
+# ------------------------
+base_path: /workspace
+dataset_path: ${base_path}/CAASI-DATASET/01_CLASSIFICATION
+output_path: ${base_path}/outputs/retfound
+checkpoint_path: ${base_path}/checkpoints/retfound
+cache_dir: ${base_path}/caasi_cache/retfound
+
+# RETFound Weights Paths
+# ---------------------
+weights_paths:
+  cfp: ${base_path}/RETFound_mae_natureCFP.pth
+  oct: ${base_path}/RETFound_mae_natureOCT.pth
+  meh: ${base_path}/RETFound_mae_meh.pth
+
+# Notes
+# -----
+# - This configuration is optimized for NVIDIA A100 80GB
+# - Reduce batch_size and disable some optimizations for smaller GPUs
+# - SAM optimizer requires ~2x memory compared to standard AdamW
+# - Enable gradient_checkpointing if running out of memory
