@@ -162,6 +162,15 @@ cython_debug/
 
 # Weights files (except in configs)
 *.weights
+weights/
+*.pth
+*.pt
+*.onnx
+*.pkl
+*.h5
+*.safetensors
+RETFound_*.pth
+retfound_*.pth
 !configs/**/*.weights
 
 # Cache directories
