@@ -22,8 +22,7 @@ classifiers = [
     "Topic :: Scientific/Engineering :: Medical Science Apps.",
 ]
 
-[tool.poetry.packages]
-[{include = "retfound"}]
+packages = [{include = "retfound"}]
 
 [tool.poetry.dependencies]
 python = "^3.9"
