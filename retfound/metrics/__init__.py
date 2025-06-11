@@ -26,7 +26,7 @@ from .visualization import (
     create_metrics_dashboard
 )
 
-from .reports import (
+from .report import (
     generate_clinical_report,
     generate_training_report,
     generate_model_card,

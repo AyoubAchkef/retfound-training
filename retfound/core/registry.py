@@ -1,6 +1,6 @@
 """Registry pattern implementation for extensible components."""
 
-from typing import Dict, Type, Any, Optional, Callable, TypeVar, Generic
+from typing import Dict, Type, Any, Optional, Callable, TypeVar, Generic, List, Tuple
 import logging
 
 from retfound.core.exceptions import ConfigurationError
@@ -107,7 +107,7 @@ class Registry(Generic[T]):
         cls = self.get(name)
         return cls(**kwargs)
     
-    def list(self) -> list[str]:
+    def list(self) -> List[str]:
         """List all registered names.
         
         Returns:
@@ -115,7 +115,7 @@ class Registry(Generic[T]):
         """
         return list(self._registry.keys())
     
-    def items(self) -> list[tuple[str, Type[T]]]:
+    def items(self) -> List[Tuple[str, Type[T]]]:
         """Get all registered items.
         
         Returns:

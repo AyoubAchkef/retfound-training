@@ -27,8 +27,28 @@ class DatasetError(RETFoundError):
     pass
 
 
+class DatasetNotFoundError(DatasetError):
+    """Raised when a dataset is not found."""
+    pass
+
+
+class DataCorruptedError(DatasetError):
+    """Raised when dataset data is corrupted."""
+    pass
+
+
 class ModelError(RETFoundError):
     """Raised when there's an error with model architecture or weights."""
+    pass
+
+
+class ModelNotFoundError(ModelError):
+    """Raised when a requested model is not found."""
+    pass
+
+
+class WeightsNotFoundError(ModelError):
+    """Raised when model weights are not found."""
     pass
 
 

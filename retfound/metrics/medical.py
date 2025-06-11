@@ -406,3 +406,153 @@ class OphthalmologyMetrics:
                 cm = cm.astype('float') / (cm.sum() + 1e-10)
         
         return cm
+
+
+# Standalone utility functions for backward compatibility and direct use
+def compute_sensitivity_specificity(
+    y_true: np.ndarray, 
+    y_pred: np.ndarray, 
+    pos_label: int = 1
+) -> Tuple[float, float]:
+    """
+    Compute sensitivity (recall) and specificity for binary classification.
+    
+    Args:
+        y_true: True binary labels
+        y_pred: Predicted binary labels
+        pos_label: Label of positive class
+        
+    Returns:
+        Tuple of (sensitivity, specificity)
+    """
+    cm = confusion_matrix(y_true, y_pred, labels=[1-pos_label, pos_label])
+    
+    if cm.shape == (2, 2):
+        tn, fp, fn, tp = cm.ravel()
+        sensitivity = tp / (tp + fn + 1e-10)
+        specificity = tn / (tn + fp + 1e-10)
+    else:
+        sensitivity = specificity = 0.0
+    
+    return sensitivity, specificity
+
+
+def compute_ppv_npv(
+    y_true: np.ndarray, 
+    y_pred: np.ndarray, 
+    pos_label: int = 1
+) -> Tuple[float, float]:
+    """
+    Compute positive predictive value (precision) and negative predictive value.
+    
+    Args:
+        y_true: True binary labels
+        y_pred: Predicted binary labels
+        pos_label: Label of positive class
+        
+    Returns:
+        Tuple of (PPV, NPV)
+    """
+    cm = confusion_matrix(y_true, y_pred, labels=[1-pos_label, pos_label])
+    
+    if cm.shape == (2, 2):
+        tn, fp, fn, tp = cm.ravel()
+        ppv = tp / (tp + fp + 1e-10)  # Precision
+        npv = tn / (tn + fn + 1e-10)  # Negative predictive value
+    else:
+        ppv = npv = 0.0
+    
+    return ppv, npv
+
+
+def compute_confusion_matrix(
+    y_true: np.ndarray, 
+    y_pred: np.ndarray, 
+    labels: Optional[List[int]] = None,
+    normalize: Optional[str] = None
+) -> np.ndarray:
+    """
+    Compute confusion matrix with optional normalization.
+    
+    Args:
+        y_true: True labels
+        y_pred: Predicted labels
+        labels: List of labels to include in matrix
+        normalize: {'true', 'pred', 'all'} or None
+        
+    Returns:
+        Confusion matrix
+    """
+    cm = confusion_matrix(y_true, y_pred, labels=labels)
+    
+    if normalize:
+        if normalize == 'true':
+            cm = cm.astype('float') / (cm.sum(axis=1, keepdims=True) + 1e-10)
+        elif normalize == 'pred':
+            cm = cm.astype('float') / (cm.sum(axis=0, keepdims=True) + 1e-10)
+        elif normalize == 'all':
+            cm = cm.astype('float') / (cm.sum() + 1e-10)
+    
+    return cm
+
+
+def compute_roc_auc(
+    y_true: np.ndarray, 
+    y_score: np.ndarray, 
+    multi_class: str = 'ovr',
+    average: str = 'macro'
+) -> float:
+    """
+    Compute ROC AUC score.
+    
+    Args:
+        y_true: True labels
+        y_score: Prediction scores
+        multi_class: {'ovr', 'ovo'} for multiclass
+        average: {'macro', 'weighted'} for multiclass
+        
+    Returns:
+        ROC AUC score
+    """
+    try:
+        return roc_auc_score(
+            y_true, y_score, 
+            multi_class=multi_class, 
+            average=average
+        )
+    except ValueError:
+        return 0.0
+
+
+def compute_cohen_kappa(
+    y_true: np.ndarray, 
+    y_pred: np.ndarray, 
+    weights: Optional[str] = None
+) -> float:
+    """
+    Compute Cohen's kappa coefficient.
+    
+    Args:
+        y_true: True labels
+        y_pred: Predicted labels
+        weights: {'linear', 'quadratic'} or None
+        
+    Returns:
+        Cohen's kappa coefficient
+    """
+    return cohen_kappa_score(y_true, y_pred, weights=weights)
+
+
+def compute_matthews_corrcoef(y_true: np.ndarray, y_pred: np.ndarray) -> float:
+    """
+    Compute Matthews correlation coefficient.
+    
+    Args:
+        y_true: True labels
+        y_pred: Predicted labels
+        
+    Returns:
+        Matthews correlation coefficient
+    """
+    from sklearn.metrics import matthews_corrcoef
+    return matthews_corrcoef(y_true, y_pred)

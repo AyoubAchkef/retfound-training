@@ -11,6 +11,19 @@ from .early_stopping import EarlyStoppingCallback
 from .logging import LoggingCallback, TensorBoardCallback, WandBCallback
 from .metrics import MetricsCallback
 
+# Create placeholder classes for missing callbacks
+class LRSchedulerCallback(Callback):
+    """Placeholder for LR Scheduler callback"""
+    def __init__(self, scheduler=None, **kwargs):
+        super().__init__()
+        self.scheduler = scheduler
+
+class EMACallback(Callback):
+    """Placeholder for EMA callback"""
+    def __init__(self, model=None, **kwargs):
+        super().__init__()
+        self.model = model
+
 from typing import List
 from ...core.config import RETFoundConfig
 
@@ -94,5 +107,7 @@ __all__ = [
     'TensorBoardCallback',
     'WandBCallback',
     'MetricsCallback',
+    'LRSchedulerCallback',
+    'EMACallback',
     'create_callbacks'
 ]
