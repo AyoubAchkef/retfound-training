@@ -17,9 +17,10 @@ from sklearn.metrics import (
 from sklearn.preprocessing import label_binarize
 
 from ..core.constants import (
-    DATASET_V61_CLASSES,
+    UNIFIED_CLASS_NAMES,
     CRITICAL_CONDITIONS,
-    DATASET_V40_CLASSES  # Pour rétrocompatibilité
+    FUNDUS_CLASS_NAMES,
+    OCT_CLASS_NAMES
 )
 
 
@@ -49,7 +50,7 @@ class OphthalmologyMetrics:
         
         # Set class names based on version
         if dataset_version == "v6.1":
-            self.class_names = DATASET_V61_CLASSES
+            self.class_names = UNIFIED_CLASS_NAMES
             if modality == "fundus":
                 self.active_classes = list(range(18))  # Classes 0-17
             elif modality == "oct":
@@ -57,7 +58,8 @@ class OphthalmologyMetrics:
             else:
                 self.active_classes = list(range(28))  # All classes
         else:
-            self.class_names = DATASET_V40_CLASSES
+            # For backward compatibility with v4.0
+            self.class_names = UNIFIED_CLASS_NAMES[:22]
             self.active_classes = list(range(22))
             
         # Critical conditions indices

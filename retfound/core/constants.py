@@ -330,3 +330,17 @@ RETFOUND_MODELS = {
 # Default RETFound configuration
 DEFAULT_RETFOUND_MODEL = "vit_large_patch16_224"
 DEFAULT_RETFOUND_WEIGHTS = "cfp"  # Use CFP for fundus by default
+
+# Alias pour compatibilité avec medical.py
+DATASET_V61_CLASSES = UNIFIED_CLASS_NAMES
+DATASET_V40_CLASSES = UNIFIED_CLASS_NAMES[:22]  # Pour rétrocompatibilité
+
+# Mapping automatique des indices critiques
+CRITICAL_CLASS_INDICES = {}
+for condition, info in CRITICAL_CONDITIONS.items():
+    indices = []
+    for class_name in UNIFIED_CLASS_NAMES:
+        if condition.lower() in class_name.lower():
+            indices.append(UNIFIED_CLASS_NAMES.index(class_name))
+    if indices:
+        CRITICAL_CLASS_INDICES[condition] = indices

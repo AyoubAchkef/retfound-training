@@ -2,20 +2,13 @@
 # Total: 211,952 images (44,815 Fundus + 167,137 OCT)
 # 28 classes total (18 Fundus + 10 OCT)
 
-# Dataset paths - Choose based on your environment
-# For Windows local:
-dataset_path: "D:\\DATASET_CLASSIFICATION"
+# Dataset paths - Use environment variables with fallbacks
+dataset_path: "${DATASET_PATH:-D:\\DATASET_CLASSIFICATION}"
 
-# For RunPod:
-# dataset_path: "/workspace/datasets/DATASET_CLASSIFICATION"
-
-# For Google Drive on Colab/RunPod:
-# dataset_path: "/content/drive/MyDrive/CAASI-DATASET/DATASET_CLASSIFICATION"
-
-# Output paths
-output_path: "./outputs/v6.1"
-checkpoint_path: "./checkpoints/v6.1"
-cache_dir: "./cache/v6.1"
+# Output paths - Use environment variables with fallbacks
+output_path: "${OUTPUT_PATH:-./outputs/v6.1}"
+checkpoint_path: "${CHECKPOINT_PATH:-./checkpoints/v6.1}"
+cache_dir: "${CACHE_DIR:-./cache/v6.1}"
 
 # Dataset specific configuration
 dataset:

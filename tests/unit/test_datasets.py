@@ -12,7 +12,7 @@ from PIL import Image
 from pathlib import Path
 
 from retfound.core.config import RETFoundConfig
-from retfound.data.datasets import RETFoundDataset, MedicalImageDataset
+from retfound.data.datasets import CAASIDatasetV61
 from retfound.data.datamodule import RETFoundDataModule
 from retfound.data.transforms import (
     create_train_transform, create_eval_transform,
@@ -22,33 +22,33 @@ from retfound.data.samplers import BalancedBatchSampler, ClassAwareSampler
 from retfound.data.cache import ImageCache
 
 
-class TestRETFoundDataset:
-    """Test main dataset class"""
+class TestCAASIDatasetV61:
+    """Test CAASI Dataset v6.1 class"""
     
     def test_dataset_creation(self, test_data_dir, minimal_config):
         """Test creating dataset"""
-        minimal_config.dataset_path = test_data_dir
-        dataset = RETFoundDataset(
-            config=minimal_config,
+        dataset = CAASIDatasetV61(
+            root=test_data_dir,
             split='train',
+            modality='both',
             transform=None
         )
         
         # Check dataset properties
         assert len(dataset) > 0
-        assert hasattr(dataset, 'images')
-        assert hasattr(dataset, 'labels')
-        assert hasattr(dataset, 'class_names')
-        assert dataset.num_classes == 3
+        assert hasattr(dataset, 'data')
+        assert hasattr(dataset, 'targets')
+        assert hasattr(dataset, 'classes')
+        assert dataset.num_classes == 28  # v6.1 unified classes
     
     def test_dataset_getitem(self, test_data_dir, minimal_config):
         """Test getting items from dataset"""
-        minimal_config.dataset_path = test_data_dir
         transform = create_eval_transform(minimal_config)
         
-        dataset = RETFoundDataset(
-            config=minimal_config,
+        dataset = CAASIDatasetV61(
+            root=test_data_dir,
             split='train',
+            modality='both',
             transform=transform
         )
         
@@ -61,30 +61,37 @@ class TestRETFoundDataset:
         assert image.shape == (3, minimal_config.input_size, minimal_config.input_size)
         assert 0 <= label < dataset.num_classes
     
-    def test_dataset_class_detection(self, test_data_dir, minimal_config):
-        """Test automatic class detection"""
-        minimal_config.dataset_path = test_data_dir
-        dataset = RETFoundDataset(
-            config=minimal_config,
+    def test_dataset_modality_filtering(self, test_data_dir, minimal_config):
+        """Test modality filtering"""
+        # Test fundus only
+        fundus_dataset = CAASIDatasetV61(
+            root=test_data_dir,
             split='train',
-            transform=None
+            modality='fundus',
+            unified_classes=False
         )
         
-        # Check class names were detected
-        expected_classes = ['0_class0', '1_class1', '2_class2']
-        assert len(dataset.class_names) == 3
-        assert all(cls in dataset.class_to_idx for cls in expected_classes)
+        # Test OCT only
+        oct_dataset = CAASIDatasetV61(
+            root=test_data_dir,
+            split='train',
+            modality='oct',
+            unified_classes=False
+        )
+        
+        # Check modality filtering
+        assert all(mod == 'fundus' for mod in fundus_dataset.modalities)
+        assert all(mod == 'oct' for mod in oct_dataset.modalities)
     
     def test_dataset_with_cache(self, test_data_dir, minimal_config, temp_output_dir):
         """Test dataset with caching enabled"""
-        minimal_config.dataset_path = test_data_dir
-        minimal_config.cache_dir = temp_output_dir / 'cache'
-        
-        dataset = RETFoundDataset(
-            config=minimal_config,
+        dataset = CAASIDatasetV61(
+            root=test_data_dir,
             split='train',
+            modality='both',
             transform=None,
-            use_cache=True
+            use_cache=True,
+            cache_dir=temp_output_dir / 'cache'
         )
         
         # Load same image twice
@@ -94,22 +101,18 @@ class TestRETFoundDataset:
         # Should be loaded from cache second time
         assert np.array_equal(img1, img2)
     
-    def test_dataset_statistics(self, test_data_dir, minimal_config):
-        """Test computing dataset statistics"""
-        minimal_config.dataset_path = test_data_dir
-        dataset = RETFoundDataset(
-            config=minimal_config,
+    def test_dataset_class_weights(self, test_data_dir, minimal_config):
+        """Test class weights calculation"""
+        dataset = CAASIDatasetV61(
+            root=test_data_dir,
             split='train',
-            transform=None
+            modality='both'
         )
         
-        stats = dataset.get_statistics()
+        weights = dataset.get_class_weights()
         
-        assert 'num_samples' in stats
-        assert 'num_classes' in stats
-        assert 'class_distribution' in stats
-        assert stats['num_samples'] == len(dataset)
-        assert stats['num_classes'] == 3
+        assert len(weights) == dataset.num_classes
+        assert all(w > 0 for w in weights)
 
 
 class TestMedicalImageDataset:

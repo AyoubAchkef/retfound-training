@@ -200,6 +200,9 @@ class CAASIDatasetV61(BaseDataset):
         
         # Calculate class weights for balanced sampling
         self._calculate_class_weights()
+        
+        # Validate class distribution
+        self._validate_class_distribution()
     
     def _load_data(self):
         """Load dataset following v6.1 structure"""
@@ -466,6 +469,26 @@ class CAASIDatasetV61(BaseDataset):
         subset.modalities = [self.modalities[i] for i in indices]
         
         return subset
+    
+    def _validate_class_distribution(self):
+        """Validate class distribution and warn about anomalies"""
+        class_counts = defaultdict(int)
+        for label in self.targets:
+            class_counts[label] += 1
+        
+        for class_idx, count in class_counts.items():
+            if count < 10:  # Très peu d'échantillons
+                class_name = self.classes[class_idx] if class_idx < len(self.classes) else f"Class_{class_idx}"
+                logger.warning(f"Class {class_name} has only {count} samples - may affect training")
+            
+            # Détection spéciale pour RAO_OCT (distribution anormale connue)
+            if class_idx < len(self.classes):
+                class_name = self.classes[class_idx]
+                if "RAO" in class_name and "OCT" in class_name and count < 50:
+                    logger.warning(
+                        f"Class {class_name} has unusual distribution ({count} samples). "
+                        f"This is expected for dataset v6.1 due to augmentation strategy."
+                    )
 
 
 # Register legacy names for backward compatibility

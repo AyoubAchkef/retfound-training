@@ -19,7 +19,7 @@ from tabulate import tabulate
 # Add project root to path
 sys.path.append(str(Path(__file__).parent.parent))
 
-from retfound.core.constants import DATASET_V61_CLASSES
+from retfound.core.constants import UNIFIED_CLASS_NAMES
 
 
 class DatasetValidator:
@@ -106,11 +106,13 @@ class DatasetValidator:
         
         # Get expected class names
         if modality == 'fundus':
-            expected_class_names = DATASET_V61_CLASSES[:18]
+            from retfound.core.constants import FUNDUS_CLASS_NAMES
+            expected_class_names = [name.split('_', 1)[1] for name in FUNDUS_CLASS_NAMES]
             class_indices = list(range(18))
         else:  # oct
-            expected_class_names = DATASET_V61_CLASSES[18:28]
-            class_indices = list(range(18, 28))
+            from retfound.core.constants import OCT_CLASS_NAMES
+            expected_class_names = [name.split('_', 1)[1] for name in OCT_CLASS_NAMES]
+            class_indices = list(range(10))
         
         # Check each split
         for split in ['train', 'val', 'test']:

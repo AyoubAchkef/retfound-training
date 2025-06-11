@@ -377,17 +377,24 @@ class RETFoundTrainer(BaseTrainer):
         """Get indices of minority classes from v6.1"""
         minority_indices = {}
         
-        # Map class weights to indices
-        class_name_to_idx = {
-            "04_ERM": 22,  # OCT class 4 -> unified index 22 (18+4)
-            "07_RVO_OCT": 25,  # OCT class 7 -> unified index 25 (18+7)
-            "09_RAO_OCT": 27,  # OCT class 9 -> unified index 27 (18+9)
-            "12_Myopia_Degenerative": 12,  # Fundus class 12
-        }
-        
+        # Mapping dynamique basé sur les noms de classes
         for class_name, weight in CLASS_WEIGHTS_V61.items():
-            if class_name in class_name_to_idx:
-                minority_indices[class_name] = class_name_to_idx[class_name]
+            # Recherche dans les noms de classes unifiées
+            for idx, unified_name in enumerate(UNIFIED_CLASS_NAMES):
+                if class_name.replace('_', ' ').lower() in unified_name.lower():
+                    minority_indices[class_name] = idx
+                    break
+            
+            # Fallback pour les cas spéciaux
+            if class_name not in minority_indices:
+                if "ERM" in class_name:
+                    minority_indices[class_name] = 22  # OCT_ERM
+                elif "RVO_OCT" in class_name:
+                    minority_indices[class_name] = 25  # OCT_RVO
+                elif "RAO_OCT" in class_name:
+                    minority_indices[class_name] = 27  # OCT_RAO
+                elif "Myopia_Degenerative" in class_name:
+                    minority_indices[class_name] = 12  # Fundus_Myopia_Degenerative
         
         return minority_indices
     
@@ -554,10 +561,14 @@ class RETFoundTrainer(BaseTrainer):
             self._mixed_batch = method != 'none'
             self._mix_params = (labels_a, labels_b, lam)
         
-        # Get modality hint if available
+        # Gestion plus robuste des métadonnées
         modality = None
-        if metadata and 'modality' in metadata:
-            modality = metadata['modality']
+        if metadata:
+            if isinstance(metadata, dict) and 'modality' in metadata:
+                modality = metadata['modality']
+            elif isinstance(metadata, list) and len(metadata) > 0:
+                if isinstance(metadata[0], dict) and 'modality' in metadata[0]:
+                    modality = metadata[0]['modality']
         
         # Forward pass with mixed precision
         with autocast(enabled=self.scaler is not None, dtype=self.amp_dtype):
