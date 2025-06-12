@@ -154,8 +154,13 @@ if torch.cuda.is_available():
 install_retfound() {
     print_info "Installing RETFound and dependencies..."
     
-    # Try pyproject.toml first, fallback to requirements.txt
-    if pip install -e ".[all]" 2>/dev/null; then
+    # Use RunPod-optimized requirements if available
+    if [ -f "requirements-runpod.txt" ]; then
+        print_info "Using RunPod-optimized requirements..."
+        pip install -r requirements-runpod.txt
+        pip install -e . --no-deps
+        print_success "RETFound installed via requirements-runpod.txt"
+    elif pip install -e ".[all]" 2>/dev/null; then
         print_success "RETFound installed via pyproject.toml"
     else
         print_warning "pyproject.toml installation failed, trying requirements.txt..."

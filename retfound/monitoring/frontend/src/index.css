@@ -1,0 +1,288 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+  
+  body {
+    @apply bg-dark-950 text-white font-sans antialiased;
+  }
+  
+  html {
+    @apply scroll-smooth;
+  }
+}
+
+@layer components {
+  /* Card component */
+  .card {
+    @apply bg-dark-900/50 backdrop-blur-sm border border-dark-700/50 rounded-xl p-6 shadow-lg;
+  }
+  
+  .card-header {
+    @apply flex items-center justify-between mb-4;
+  }
+  
+  .card-title {
+    @apply text-lg font-semibold text-white;
+  }
+  
+  .card-subtitle {
+    @apply text-sm text-dark-400;
+  }
+  
+  /* Button variants */
+  .btn {
+    @apply inline-flex items-center justify-center rounded-lg px-4 py-2 text-sm font-medium transition-all duration-200 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-offset-dark-950;
+  }
+  
+  .btn-primary {
+    @apply btn bg-primary-600 text-white hover:bg-primary-700 focus:ring-primary-500;
+  }
+  
+  .btn-secondary {
+    @apply btn bg-dark-700 text-white hover:bg-dark-600 focus:ring-dark-500;
+  }
+  
+  .btn-success {
+    @apply btn bg-success-600 text-white hover:bg-success-700 focus:ring-success-500;
+  }
+  
+  .btn-warning {
+    @apply btn bg-warning-600 text-white hover:bg-warning-700 focus:ring-warning-500;
+  }
+  
+  .btn-danger {
+    @apply btn bg-danger-600 text-white hover:bg-danger-700 focus:ring-danger-500;
+  }
+  
+  .btn-ghost {
+    @apply btn bg-transparent text-dark-300 hover:bg-dark-800 hover:text-white focus:ring-dark-500;
+  }
+  
+  /* Status indicators */
+  .status-indicator {
+    @apply inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium;
+  }
+  
+  .status-training {
+    @apply status-indicator bg-primary-900/50 text-primary-300 border border-primary-700/50;
+  }
+  
+  .status-paused {
+    @apply status-indicator bg-warning-900/50 text-warning-300 border border-warning-700/50;
+  }
+  
+  .status-completed {
+    @apply status-indicator bg-success-900/50 text-success-300 border border-success-700/50;
+  }
+  
+  .status-error {
+    @apply status-indicator bg-danger-900/50 text-danger-300 border border-danger-700/50;
+  }
+  
+  .status-idle {
+    @apply status-indicator bg-dark-800/50 text-dark-400 border border-dark-600/50;
+  }
+  
+  /* Metric cards */
+  .metric-card {
+    @apply card p-4;
+  }
+  
+  .metric-value {
+    @apply text-2xl font-bold text-white;
+  }
+  
+  .metric-label {
+    @apply text-sm text-dark-400 mt-1;
+  }
+  
+  .metric-change {
+    @apply text-xs font-medium mt-2;
+  }
+  
+  .metric-change.positive {
+    @apply text-success-400;
+  }
+  
+  .metric-change.negative {
+    @apply text-danger-400;
+  }
+  
+  .metric-change.neutral {
+    @apply text-dark-400;
+  }
+  
+  /* Progress bars */
+  .progress-bar {
+    @apply w-full bg-dark-800 rounded-full h-2 overflow-hidden;
+  }
+  
+  .progress-fill {
+    @apply h-full bg-gradient-to-r from-primary-600 to-primary-500 transition-all duration-300 ease-out;
+  }
+  
+  .progress-fill.success {
+    @apply from-success-600 to-success-500;
+  }
+  
+  .progress-fill.warning {
+    @apply from-warning-600 to-warning-500;
+  }
+  
+  .progress-fill.danger {
+    @apply from-danger-600 to-danger-500;
+  }
+  
+  /* Critical alerts */
+  .alert {
+    @apply p-4 rounded-lg border;
+  }
+  
+  .alert-critical {
+    @apply alert bg-danger-900/20 border-danger-700/50 text-danger-300;
+  }
+  
+  .alert-warning {
+    @apply alert bg-warning-900/20 border-warning-700/50 text-warning-300;
+  }
+  
+  .alert-success {
+    @apply alert bg-success-900/20 border-success-700/50 text-success-300;
+  }
+  
+  .alert-info {
+    @apply alert bg-primary-900/20 border-primary-700/50 text-primary-300;
+  }
+  
+  /* Chart containers */
+  .chart-container {
+    @apply w-full h-64 p-4;
+  }
+  
+  .chart-container.large {
+    @apply h-80;
+  }
+  
+  .chart-container.small {
+    @apply h-48;
+  }
+  
+  /* Scrollbars */
+  .scrollbar-thin {
+    scrollbar-width: thin;
+    scrollbar-color: #475569 #1e293b;
+  }
+  
+  .scrollbar-thin::-webkit-scrollbar {
+    width: 6px;
+    height: 6px;
+  }
+  
+  .scrollbar-thin::-webkit-scrollbar-track {
+    background: #1e293b;
+    border-radius: 3px;
+  }
+  
+  .scrollbar-thin::-webkit-scrollbar-thumb {
+    background: #475569;
+    border-radius: 3px;
+  }
+  
+  .scrollbar-thin::-webkit-scrollbar-thumb:hover {
+    background: #64748b;
+  }
+  
+  /* Loading states */
+  .skeleton {
+    @apply animate-pulse bg-dark-800 rounded;
+  }
+  
+  .skeleton-text {
+    @apply skeleton h-4 w-full;
+  }
+  
+  .skeleton-text.short {
+    @apply w-3/4;
+  }
+  
+  .skeleton-text.medium {
+    @apply w-1/2;
+  }
+  
+  .skeleton-text.long {
+    @apply w-5/6;
+  }
+  
+  /* Glow effects */
+  .glow-primary {
+    @apply shadow-glow;
+  }
+  
+  .glow-primary-lg {
+    @apply shadow-glow-lg;
+  }
+  
+  /* Grid layouts */
+  .dashboard-grid {
+    @apply grid gap-6;
+    grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+  }
+  
+  .metrics-grid {
+    @apply grid gap-4;
+    grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  }
+  
+  /* Responsive utilities */
+  @screen sm {
+    .dashboard-grid {
+      grid-template-columns: repeat(auto-fit, minmax(350px, 1fr));
+    }
+  }
+  
+  @screen lg {
+    .dashboard-grid {
+      grid-template-columns: repeat(3, 1fr);
+    }
+  }
+  
+  @screen xl {
+    .dashboard-grid {
+      grid-template-columns: repeat(4, 1fr);
+    }
+  }
+}
+
+@layer utilities {
+  /* Custom utilities */
+  .text-gradient {
+    @apply bg-gradient-to-r from-primary-400 to-primary-600 bg-clip-text text-transparent;
+  }
+  
+  .border-gradient {
+    border-image: linear-gradient(135deg, #8b5cf6, #a78bfa) 1;
+  }
+  
+  /* Animation utilities */
+  .animate-fade-in {
+    @apply animate-fade-in;
+  }
+  
+  .animate-slide-up {
+    @apply animate-slide-up;
+  }
+  
+  .animate-slide-down {
+    @apply animate-slide-down;
+  }
+  
+  /* Focus utilities */
+  .focus-ring {
+    @apply focus:outline-none focus:ring-2 focus:ring-primary-500 focus:ring-offset-2 focus:ring-offset-dark-950;
+  }
+}

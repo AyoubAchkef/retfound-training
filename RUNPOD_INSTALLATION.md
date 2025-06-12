@@ -27,17 +27,22 @@ Ce script :
 
 ```bash
 # Mise à jour du système
-apt-get update && apt-get install -y libgl1-mesa-glx
+apt-get update && apt-get install -y libgl1-mesa-glx libglib2.0-0 libsm6 libxext6 libxrender-dev libgomp1
 
-# Installation PyTorch avec CUDA 11.8
-pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu118
+# Installation PyTorch avec CUDA 11.8/12.1 (détection automatique)
+pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121
 
-# Option A: Installation via pyproject.toml (recommandée)
-pip install -e ".[all]"
-
-# Option B: Si pyproject.toml échoue, utiliser requirements.txt
+# Installation des dépendances principales
 pip install -r requirements.txt
+
+# Installation du package en mode développement
 pip install -e . --no-deps
+
+# Installation des dépendances frontend (optionnel)
+cd retfound/monitoring/frontend
+npm install
+npm run build
+cd ../../..
 ```
 
 ## 📋 Gestion des Dépendances
