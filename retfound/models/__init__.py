@@ -4,6 +4,7 @@ from retfound.models.base import BaseModel
 from retfound.models.retfound import RETFoundModel
 from retfound.models.factory import (
     create_model,
+    load_model,
     create_retfound_cfp,
     create_retfound_oct,
     create_retfound_meh,
@@ -23,6 +24,7 @@ __all__ = [
     
     # Factory functions
     "create_model",
+    "load_model",
     "create_retfound_cfp",
     "create_retfound_oct",
     "create_retfound_meh",

@@ -451,3 +451,107 @@ def validate_model_config(
     
     # Add validation for other dataset versions as needed
     return True
+
+
+def load_model(
+    config: Union[RETFoundConfig, Dict, str],
+    checkpoint_path: Union[str, Path],
+    device: Optional[torch.device] = None,
+    strict: bool = False,
+    **kwargs
+) -> RETFoundModel:
+    """
+    Load a model from checkpoint
+    
+    Args:
+        config: Model configuration (config object, dict, or path to config)
+        checkpoint_path: Path to checkpoint file
+        device: Device to load model on
+        strict: Whether to strictly enforce weight loading
+        **kwargs: Additional arguments passed to model creation
+        
+    Returns:
+        Loaded RETFoundModel instance
+    """
+    checkpoint_path = Path(checkpoint_path)
+    
+    if not checkpoint_path.exists():
+        raise WeightsNotFoundError(f"Checkpoint not found: {checkpoint_path}")
+    
+    # Load checkpoint
+    logger.info(f"Loading checkpoint from {checkpoint_path}")
+    checkpoint = torch.load(checkpoint_path, map_location='cpu')
+    
+    # Extract config if not provided
+    if isinstance(config, str):
+        # Config path provided
+        from ..core.config import RETFoundConfig
+        config = RETFoundConfig.from_file(config)
+    elif isinstance(config, dict):
+        # Config dict provided
+        from ..core.config import RETFoundConfig
+        config = RETFoundConfig(**config)
+    elif config is None:
+        # Try to extract from checkpoint
+        if 'config' in checkpoint:
+            from ..core.config import RETFoundConfig
+            config = RETFoundConfig(**checkpoint['config'])
+        else:
+            raise ValueError("No config provided and none found in checkpoint")
+    
+    # Extract metadata for v6.1 compatibility
+    metadata = checkpoint.get('metadata', {})
+    dataset_version = metadata.get('dataset_version', 'v4.0')
+    
+    # Auto-detect v6.1 parameters
+    unified_classes = None
+    modality = None
+    
+    if dataset_version == 'v6.1':
+        unified_classes = metadata.get('unified_classes', True)
+        modality = metadata.get('modality', 'both')
+        logger.info(f"Loading v6.1 model: unified={unified_classes}, modality={modality}")
+    
+    # Override with kwargs if provided
+    unified_classes = kwargs.pop('unified_classes', unified_classes)
+    modality = kwargs.pop('modality', modality)
+    
+    # Create model
+    model = RETFoundFactory.create(
+        config,
+        unified_classes=unified_classes,
+        modality=modality,
+        **kwargs
+    )
+    
+    # Load state dict
+    if 'model_state_dict' in checkpoint:
+        state_dict = checkpoint['model_state_dict']
+    elif 'state_dict' in checkpoint:
+        state_dict = checkpoint['state_dict']
+    elif 'model' in checkpoint:
+        state_dict = checkpoint['model']
+    else:
+        state_dict = checkpoint
+    
+    # Load weights
+    missing_keys, unexpected_keys = model.load_state_dict(state_dict, strict=strict)
+    
+    if missing_keys:
+        logger.warning(f"Missing keys when loading checkpoint: {missing_keys}")
+    if unexpected_keys:
+        logger.warning(f"Unexpected keys when loading checkpoint: {unexpected_keys}")
+    
+    # Move to device if specified
+    if device is not None:
+        model = model.to(device)
+        logger.info(f"Model moved to {device}")
+    
+    # Log checkpoint info
+    if 'epoch' in checkpoint:
+        logger.info(f"Loaded checkpoint from epoch {checkpoint['epoch']}")
+    if 'best_metric' in checkpoint:
+        logger.info(f"Best metric: {checkpoint['best_metric']}")
+    
+    logger.info("Model loaded successfully from checkpoint")
+    return model
