@@ -8,8 +8,15 @@ Main command-line interface for RETFound.
 import sys
 import argparse
 import logging
+import warnings
+import os
 from pathlib import Path
 from typing import Optional, List
+
+# Supprimer tous les warnings pour un affichage propre
+warnings.filterwarnings("ignore")
+os.environ['NO_ALBUMENTATIONS_UPDATE'] = '1'
+os.environ['PYTHONWARNINGS'] = 'ignore'
 
 from .commands import train, evaluate, predict
 from .utils import setup_cli_logging, print_banner

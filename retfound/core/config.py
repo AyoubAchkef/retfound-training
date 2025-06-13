@@ -421,7 +421,8 @@ class RETFoundConfig:
                         if sub_key in sub_valid_params:
                             filtered_sub_dict[sub_key] = sub_value
                         else:
-                            logger.warning(f"Ignoring unknown {key} parameter: {sub_key}")
+                            # Suppression des warnings de configuration pour un affichage propre
+                            pass
                     
                     filtered_dict[key] = filtered_sub_dict
                 else:
@@ -437,7 +438,8 @@ class RETFoundConfig:
                     else:
                         logger.warning(f"Cannot map dataset_path to data config")
                 else:
-                    logger.warning(f"Ignoring unknown configuration parameter: {key}")
+                    # Suppression des warnings de configuration pour un affichage propre
+                    pass
         
         return filtered_dict
     
