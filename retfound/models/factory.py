@@ -124,12 +124,11 @@ class RETFoundFactory:
         if unified_classes:
             logger.info("Using v6.1 unified class system")
         
-        model = RETFoundModel(
-            config, 
-            unified_classes=unified_classes,
-            modality=modality,
-            **kwargs
-        )
+        # Filter out parameters that RETFoundModel doesn't accept
+        model_kwargs = {k: v for k, v in kwargs.items() 
+                       if k not in ['unified_classes', 'modality']}
+        
+        model = RETFoundModel(config, **model_kwargs)
         
         # Select appropriate pretrained weights for v6.1
         if pretrained is None and unified_classes and modality:
