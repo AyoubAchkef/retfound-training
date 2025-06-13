@@ -9,6 +9,7 @@ import logging
 from pathlib import Path
 from typing import Optional, Dict, Any
 import json
+import numpy as np
 import torch
 import torch.onnx
 from datetime import datetime
