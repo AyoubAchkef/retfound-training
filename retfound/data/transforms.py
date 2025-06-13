@@ -154,7 +154,7 @@ class PathologyAugmentation:
                 A.RandomGamma(gamma_limit=(90, 110), p=0.5),
                 A.CLAHE(clip_limit=2.0, tile_grid_size=(4, 4), p=0.4),
                 A.MedianBlur(blur_limit=3, p=0.2),
-                A.RandomContrast(limit=0.2, p=0.5),
+                A.RandomBrightnessContrast(brightness_limit=0.0, contrast_limit=0.2, p=0.5),
             ]),
             
             # CSR (Central Serous Retinopathy) - fluid accumulation
