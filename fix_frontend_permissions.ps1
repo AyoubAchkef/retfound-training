@@ -29,7 +29,7 @@ try {
 
 # Step 3: Install dependencies
 Write-Host "📦 Installing dependencies..." -ForegroundColor Yellow
-$installResult = npm install
+npm install
 if ($LASTEXITCODE -eq 0) {
     Write-Host "✅ Dependencies installed successfully" -ForegroundColor Green
 } else {
@@ -39,7 +39,7 @@ if ($LASTEXITCODE -eq 0) {
 
 # Step 4: Test TypeScript compilation
 Write-Host "🔍 Testing TypeScript compilation..." -ForegroundColor Yellow
-$tscResult = npx tsc --noEmit
+npx tsc --noEmit
 if ($LASTEXITCODE -eq 0) {
     Write-Host "✅ TypeScript compilation successful" -ForegroundColor Green
 } else {
@@ -49,7 +49,7 @@ if ($LASTEXITCODE -eq 0) {
 
 # Step 5: Test build
 Write-Host "🏗️  Testing build process..." -ForegroundColor Yellow
-$buildResult = npm run build
+npm run build
 if ($LASTEXITCODE -eq 0) {
     Write-Host "✅ Build successful" -ForegroundColor Green
 } else {
