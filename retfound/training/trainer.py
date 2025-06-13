@@ -99,8 +99,8 @@ class BaseTrainer(ABC):
     
     def _setup_directories(self):
         """Create necessary directories"""
-        self.output_dir = self.getattr(config, 'output_path', 'outputs')
-        self.checkpoint_dir = self.getattr(config, 'checkpoint_path', 'checkpoints')
+        self.output_dir = getattr(self.config, 'output_path', 'outputs')
+        self.checkpoint_dir = getattr(self.config, 'checkpoint_path', 'checkpoints')
         
         for directory in [self.output_dir, self.checkpoint_dir]:
             directory.mkdir(parents=True, exist_ok=True)
@@ -470,7 +470,7 @@ class RETFoundTrainer(BaseTrainer):
             torch.cuda.reset_peak_memory_stats()
         
         # Progress bar
-        pbar = tqdm(train_loader, desc=f"Epoch {epoch}/{self.config.training.epochs if hasattr(self.config, 'training') else self.getattr(config, 'epochs', 50)}")
+        pbar = tqdm(train_loader, desc=f"Epoch {epoch}/{self.config.training.epochs if hasattr(self.config, 'training') else getattr(self.config, 'epochs', 50)}")
         
         # Track per-class performance
         class_correct = torch.zeros(self.train_metrics.num_classes)
@@ -520,7 +520,7 @@ class RETFoundTrainer(BaseTrainer):
                     class_total[labels[i]] += 1
             
             # Update progress bar
-            if batch_idx % self.getattr(config, 'log_interval', 10) == 0:
+            if batch_idx % getattr(self.config, 'log_interval', 10) == 0:
                 current_lr = self.optimizer.param_groups[0]['lr']
                 gpu_memory = torch.cuda.max_memory_allocated() / 1e9 if torch.cuda.is_available() else 0
                 
@@ -603,7 +603,7 @@ class RETFoundTrainer(BaseTrainer):
             self.scaler.unscale_(self.optimizer)
         
         # Gradient clipping
-        gradient_clip = self.config.optimization.gradient_clip if hasattr(self.config, 'optimization') else self.getattr(config, 'gradient_clip', 1.0)
+        gradient_clip = self.config.optimization.gradient_clip if hasattr(self.config, 'optimization') else getattr(self.config, 'gradient_clip', 1.0)
         
         if gradient_clip > 0:
             grad_norm = torch.nn.utils.clip_grad_norm_(
