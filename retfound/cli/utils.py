@@ -7,6 +7,7 @@ Common utilities for command line interface.
 
 import sys
 import logging
+import time
 from pathlib import Path
 from typing import Optional, Dict, Any, List
 import torch
@@ -33,6 +34,16 @@ def setup_console_logging(verbose: bool = False):
         format="%(message)s",
         handlers=[RichHandler(rich_tracebacks=True, show_time=True)]
     )
+
+
+def setup_cli_logging(verbose: bool = False, log_file: Optional[Path] = None):
+    """Setup CLI logging with console and optional file output"""
+    # Setup console logging
+    setup_console_logging(verbose)
+    
+    # Setup file logging if requested
+    if log_file:
+        setup_file_logging(log_file, "DEBUG" if verbose else "INFO")
 
 
 def print_banner():
