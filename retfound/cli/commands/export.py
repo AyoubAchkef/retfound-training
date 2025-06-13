@@ -423,6 +423,20 @@ def main():
     else:
         print(f"Error: {input_path} not found")
         return 1
+
+
+def add_subparser(subparsers):
+    """Add export subcommand to parser"""
+    parser = subparsers.add_parser(
+        'export',
+        help='Export RETFound model to various formats',
+        description='Export trained RETFound model for deployment'
+    )
+    
+    add_export_args(parser)
+    parser.set_defaults(func=run_export)
+    
+    return parser
     
     return 0
 

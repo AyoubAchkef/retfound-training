@@ -462,3 +462,17 @@ def _generate_clinical_report(evaluator: RETFoundEvaluator, results: Dict, args:
         f.write("```\n")
     
     logger.info(f"Clinical report saved to {report_path}")
+
+
+def add_subparser(subparsers):
+    """Add evaluate subcommand to parser"""
+    parser = subparsers.add_parser(
+        'evaluate',
+        help='Evaluate RETFound model',
+        description='Evaluate trained RETFound model on test data'
+    )
+    
+    add_evaluate_args(parser)
+    parser.set_defaults(func=run_evaluate)
+    
+    return parser

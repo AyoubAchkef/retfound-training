@@ -580,3 +580,17 @@ def run_train(args) -> int:
             wandb.finish(exit_code=1)
         
         return 1
+
+
+def add_subparser(subparsers):
+    """Add train subcommand to parser"""
+    parser = subparsers.add_parser(
+        'train',
+        help='Train RETFound model on dataset v6.1',
+        description='Train RETFound model with advanced features for medical imaging'
+    )
+    
+    add_train_args(parser)
+    parser.set_defaults(func=run_train)
+    
+    return parser
