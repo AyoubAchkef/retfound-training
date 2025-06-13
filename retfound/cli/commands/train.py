@@ -150,12 +150,12 @@ def setup_callbacks(config: RETFoundConfig, trial_name: str) -> List:
     
     # Checkpoint callback
     callbacks.append(CheckpointCallback(
-        checkpoint_dir=config.checkpoint_path,
-        save_frequency=config.training.save_frequency if hasattr(config.training, 'save_frequency') else 5,
-        monitor=monitor_metric,
+        checkpoint_dir=config.checkpoint_path / trial_name,
+        save_frequency=config.training.save_frequency,
+        save_best=True,
+        monitor='val_accuracy',
         mode='max',
-        save_best_only=True,
-        save_last=True
+        verbose=True
     ))
     
     # Early stopping
