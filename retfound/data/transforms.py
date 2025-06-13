@@ -310,13 +310,16 @@ def create_train_transforms(
     Returns:
         Transform function
     """
+    # Get input size from config, with fallback
+    input_size = getattr(config, 'input_size', 224)
+    
     if ALBUMENTATIONS_AVAILABLE:
         # Base augmentations
         transforms_list = [
             # Spatial augmentations
             A.RandomResizedCrop(
-                height=config.input_size,
-                width=config.input_size,
+                height=input_size,
+                width=input_size,
                 scale=(0.5, 1.0),
                 ratio=(0.8, 1.2),
                 interpolation=cv2.INTER_LANCZOS4 if CV2_AVAILABLE else 1,
@@ -388,7 +391,7 @@ def create_train_transforms(
         logger.warning("Using basic torchvision transforms")
         transform = transforms.Compose([
             transforms.RandomResizedCrop(
-                config.input_size,
+                input_size,
                 scale=(0.5, 1.0),
                 ratio=(0.8, 1.2),
                 interpolation=InterpolationMode.LANCZOS
@@ -418,11 +421,14 @@ def create_val_transforms(config: RETFoundConfig) -> Callable:
     Returns:
         Transform function
     """
+    # Get input size from config, with fallback
+    input_size = getattr(config, 'input_size', 224)
+    
     if ALBUMENTATIONS_AVAILABLE:
         transform = A.Compose([
             A.Resize(
-                height=config.input_size,
-                width=config.input_size,
+                height=input_size,
+                width=input_size,
                 interpolation=cv2.INTER_LANCZOS4 if CV2_AVAILABLE else 1
             ),
             A.Normalize(
@@ -435,7 +441,7 @@ def create_val_transforms(config: RETFoundConfig) -> Callable:
     else:
         transform = transforms.Compose([
             transforms.Resize(
-                (config.input_size, config.input_size),
+                (input_size, input_size),
                 interpolation=InterpolationMode.LANCZOS
             ),
             transforms.ToTensor(),
@@ -623,10 +629,13 @@ class TestTimeAugmentation:
             logger.warning("Albumentations not available for TTA")
             return [create_val_transforms(self.config)]
         
+        # Get input size from config, with fallback
+        input_size = getattr(self.config, 'input_size', 224)
+        
         transforms_list = [
             # Original
             A.Compose([
-                A.Resize(self.config.input_size, self.config.input_size),
+                A.Resize(input_size, input_size),
                 A.Normalize(
                     mean=self.config.pixel_mean,
                     std=self.config.pixel_std
@@ -636,7 +645,7 @@ class TestTimeAugmentation:
             
             # Horizontal flip
             A.Compose([
-                A.Resize(self.config.input_size, self.config.input_size),
+                A.Resize(input_size, input_size),
                 A.HorizontalFlip(p=1.0),
                 A.Normalize(
                     mean=self.config.pixel_mean,
@@ -647,7 +656,7 @@ class TestTimeAugmentation:
             
             # Vertical flip
             A.Compose([
-                A.Resize(self.config.input_size, self.config.input_size),
+                A.Resize(input_size, input_size),
                 A.VerticalFlip(p=1.0),
                 A.Normalize(
                     mean=self.config.pixel_mean,
@@ -658,7 +667,7 @@ class TestTimeAugmentation:
             
             # 90 degree rotation
             A.Compose([
-                A.Resize(self.config.input_size, self.config.input_size),
+                A.Resize(input_size, input_size),
                 A.RandomRotate90(p=1.0),
                 A.Normalize(
                     mean=self.config.pixel_mean,
@@ -670,8 +679,8 @@ class TestTimeAugmentation:
             # Slight zoom
             A.Compose([
                 A.RandomResizedCrop(
-                    height=self.config.input_size,
-                    width=self.config.input_size,
+                    height=input_size,
+                    width=input_size,
                     scale=(0.9, 1.0),
                     ratio=(0.95, 1.05),
                     p=1.0
