@@ -437,8 +437,6 @@ def add_subparser(subparsers):
     parser.set_defaults(func=run_export)
     
     return parser
-    
-    return 0
 
 
 if __name__ == '__main__':
