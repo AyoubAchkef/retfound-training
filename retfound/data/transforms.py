@@ -377,8 +377,8 @@ def create_train_transforms(
         # Final normalization
         transforms_list.extend([
             A.Normalize(
-                mean=config.pixel_mean,
-                std=config.pixel_std,
+                mean=getattr(config, 'pixel_mean', [0.485, 0.456, 0.406]),
+                std=getattr(config, 'pixel_std', [0.229, 0.224, 0.225]),
                 max_pixel_value=255.0
             ),
             ToTensorV2()
@@ -432,8 +432,8 @@ def create_val_transforms(config: RETFoundConfig) -> Callable:
                 interpolation=cv2.INTER_LANCZOS4 if CV2_AVAILABLE else 1
             ),
             A.Normalize(
-                mean=config.pixel_mean,
-                std=config.pixel_std,
+                mean=getattr(config, 'pixel_mean', [0.485, 0.456, 0.406]),
+                std=getattr(config, 'pixel_std', [0.229, 0.224, 0.225]),
                 max_pixel_value=255.0
             ),
             ToTensorV2()
@@ -637,8 +637,8 @@ class TestTimeAugmentation:
             A.Compose([
                 A.Resize(input_size, input_size),
                 A.Normalize(
-                    mean=self.config.pixel_mean,
-                    std=self.config.pixel_std
+                    mean=getattr(self.config, 'pixel_mean', [0.485, 0.456, 0.406]),
+                    std=getattr(self.config, 'pixel_std', [0.229, 0.224, 0.225])
                 ),
                 ToTensorV2()
             ]),
@@ -648,8 +648,8 @@ class TestTimeAugmentation:
                 A.Resize(input_size, input_size),
                 A.HorizontalFlip(p=1.0),
                 A.Normalize(
-                    mean=self.config.pixel_mean,
-                    std=self.config.pixel_std
+                    mean=getattr(self.config, 'pixel_mean', [0.485, 0.456, 0.406]),
+                    std=getattr(self.config, 'pixel_std', [0.229, 0.224, 0.225])
                 ),
                 ToTensorV2()
             ]),
@@ -659,8 +659,8 @@ class TestTimeAugmentation:
                 A.Resize(input_size, input_size),
                 A.VerticalFlip(p=1.0),
                 A.Normalize(
-                    mean=self.config.pixel_mean,
-                    std=self.config.pixel_std
+                    mean=getattr(self.config, 'pixel_mean', [0.485, 0.456, 0.406]),
+                    std=getattr(self.config, 'pixel_std', [0.229, 0.224, 0.225])
                 ),
                 ToTensorV2()
             ]),
@@ -670,8 +670,8 @@ class TestTimeAugmentation:
                 A.Resize(input_size, input_size),
                 A.RandomRotate90(p=1.0),
                 A.Normalize(
-                    mean=self.config.pixel_mean,
-                    std=self.config.pixel_std
+                    mean=getattr(self.config, 'pixel_mean', [0.485, 0.456, 0.406]),
+                    std=getattr(self.config, 'pixel_std', [0.229, 0.224, 0.225])
                 ),
                 ToTensorV2()
             ]),
@@ -686,8 +686,8 @@ class TestTimeAugmentation:
                     p=1.0
                 ),
                 A.Normalize(
-                    mean=self.config.pixel_mean,
-                    std=self.config.pixel_std
+                    mean=getattr(self.config, 'pixel_mean', [0.485, 0.456, 0.406]),
+                    std=getattr(self.config, 'pixel_std', [0.229, 0.224, 0.225])
                 ),
                 ToTensorV2()
             ])
