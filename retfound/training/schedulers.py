@@ -387,11 +387,16 @@ def create_scheduler(
             )
             return None
         
+        # Get configuration values with safe defaults
+        base_lr = getattr(config, 'base_lr', 1e-4)
+        warmup_epochs = getattr(config, 'warmup_epochs', 0)
+        epochs = getattr(config, 'epochs', 50)
+        
         scheduler = torch.optim.lr_scheduler.OneCycleLR(
             optimizer,
-            max_lr=config.base_lr,
+            max_lr=base_lr,
             total_steps=num_training_steps,
-            pct_start=config.warmup_epochs / config.epochs if config.warmup_epochs > 0 else 0.1,
+            pct_start=warmup_epochs / epochs if warmup_epochs > 0 else 0.1,
             anneal_strategy='cos',
             cycle_momentum=True,
             base_momentum=0.85,
@@ -402,45 +407,67 @@ def create_scheduler(
         )
     
     elif scheduler_name == "linear_warmup_cosine":
+        # Get configuration values with safe defaults
+        warmup_epochs = getattr(config, 'warmup_epochs', 0)
+        warmup_lr = getattr(config, 'warmup_lr', 1e-6)
+        min_lr = getattr(config, 'min_lr', 1e-6)
+        epochs = getattr(config, 'epochs', 50)
+        
         scheduler = LinearWarmupCosineAnnealing(
             optimizer,
-            warmup_epochs=config.warmup_epochs,
-            warmup_lr=config.warmup_lr,
-            min_lr=config.min_lr,
-            max_epochs=config.epochs,
+            warmup_epochs=warmup_epochs,
+            warmup_lr=warmup_lr,
+            min_lr=min_lr,
+            max_epochs=epochs,
             **kwargs
         )
     
     elif scheduler_name == "cosine_warmup":
+        # Get configuration values with safe defaults
+        epochs = getattr(config, 'epochs', 50)
+        warmup_epochs = getattr(config, 'warmup_epochs', 0)
+        min_lr = getattr(config, 'min_lr', 1e-6)
+        warmup_lr = getattr(config, 'warmup_lr', 1e-6)
+        
         if num_training_steps is None:
-            num_training_steps = config.epochs
+            num_training_steps = epochs
         
         scheduler = CosineAnnealingWithWarmup(
             optimizer,
-            warmup_steps=config.warmup_epochs,
-            min_lr=config.min_lr,
+            warmup_steps=warmup_epochs,
+            min_lr=min_lr,
             max_steps=num_training_steps,
-            warmup_lr=config.warmup_lr,
+            warmup_lr=warmup_lr,
             **kwargs
         )
     
     elif scheduler_name == "exponential":
+        # Get configuration values with safe defaults
+        warmup_epochs = getattr(config, 'warmup_epochs', 0)
+        warmup_lr = getattr(config, 'warmup_lr', 1e-6)
+        
         scheduler = ExponentialLRWithWarmup(
             optimizer,
             gamma=kwargs.get('gamma', 0.95),
-            warmup_epochs=config.warmup_epochs,
-            warmup_lr=config.warmup_lr,
+            warmup_epochs=warmup_epochs,
+            warmup_lr=warmup_lr,
             **kwargs
         )
     
     elif scheduler_name == "polynomial":
+        # Get configuration values with safe defaults
+        epochs = getattr(config, 'epochs', 50)
+        min_lr = getattr(config, 'min_lr', 1e-6)
+        warmup_epochs = getattr(config, 'warmup_epochs', 0)
+        warmup_lr = getattr(config, 'warmup_lr', 1e-6)
+        
         scheduler = PolynomialLRWithWarmup(
             optimizer,
-            max_epochs=config.epochs,
+            max_epochs=epochs,
             power=kwargs.get('power', 1.0),
-            min_lr=config.min_lr,
-            warmup_epochs=config.warmup_epochs,
-            warmup_lr=config.warmup_lr,
+            min_lr=min_lr,
+            warmup_epochs=warmup_epochs,
+            warmup_lr=warmup_lr,
             **kwargs
         )
     

@@ -418,7 +418,14 @@ def create_loss_function(
     # Calculate class weights if needed
     class_weights = None
     
-    if config.use_class_weights and train_dataset is not None:
+    # Get configuration values with safe defaults
+    use_class_weights = getattr(config, 'use_class_weights', True)
+    num_classes = getattr(config, 'num_classes', 28)
+    use_focal_loss = getattr(config, 'use_focal_loss', False)
+    focal_gamma = getattr(config, 'focal_gamma', 2.0)
+    label_smoothing = getattr(config, 'label_smoothing', 0.0)
+    
+    if use_class_weights and train_dataset is not None:
         if hasattr(train_dataset, 'targets'):
             labels = train_dataset.targets
         elif hasattr(train_dataset, 'get_labels'):
@@ -430,7 +437,7 @@ def create_loss_function(
         if labels:
             class_weights = calculate_class_weights(
                 labels,
-                config.num_classes,
+                num_classes,
                 weight_type='inverse_frequency',
                 device=device
             )
@@ -439,26 +446,26 @@ def create_loss_function(
             imbalance_ratio = class_weights.max() / class_weights.min()
             logger.info(f"Class weight ratio: {imbalance_ratio:.1f}:1")
             
-            if imbalance_ratio > 10 and not config.use_focal_loss:
+            if imbalance_ratio > 10 and not use_focal_loss:
                 logger.warning(
                     f"High class imbalance detected ({imbalance_ratio:.1f}:1). "
                     "Consider using focal loss."
                 )
     
     # Create loss function
-    if config.use_focal_loss:
+    if use_focal_loss:
         logger.info("Using Focal Loss")
         loss_fn = FocalLoss(
             alpha=class_weights,
-            gamma=config.focal_gamma,
+            gamma=focal_gamma,
             reduction='mean',
-            label_smoothing=config.label_smoothing
+            label_smoothing=label_smoothing
         )
     
-    elif config.label_smoothing > 0:
-        logger.info(f"Using Label Smoothing CE (smoothing={config.label_smoothing})")
+    elif label_smoothing > 0:
+        logger.info(f"Using Label Smoothing CE (smoothing={label_smoothing})")
         loss_fn = LabelSmoothingCrossEntropy(
-            smoothing=config.label_smoothing,
+            smoothing=label_smoothing,
             weight=class_weights
         )
     
