@@ -6,10 +6,10 @@ Test script to verify CLI fixes are working
 def test_config_loading():
     """Test configuration loading"""
     try:
+        print("🔄 Testing configuration loading...")
         from retfound.core.config import RETFoundConfig
         from pathlib import Path
         
-        print("🔄 Testing configuration loading...")
         config = RETFoundConfig.load(Path('configs/runpod.yaml'))
         print("✅ Config loaded successfully!")
         print(f"📁 Dataset path: {config.data.dataset_path}")
@@ -18,6 +18,8 @@ def test_config_loading():
         return True
     except Exception as e:
         print(f"❌ Config loading failed: {e}")
+        import traceback
+        traceback.print_exc()
         return False
 
 def test_cli_import():
