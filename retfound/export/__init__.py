@@ -59,11 +59,26 @@ from .torchscript import (
 )
 
 from .inference import (
-    InferenceModel,
     RETFoundPredictor,
-    create_inference_script,
-    benchmark_inference
 )
+
+# Create alias for backward compatibility
+InferenceModel = RETFoundPredictor
+
+# Create placeholder functions if they don't exist
+try:
+    from .inference import create_inference_script
+except ImportError:
+    def create_inference_script(model_path, output_path, **kwargs):
+        """Placeholder function for creating inference scripts"""
+        raise NotImplementedError("create_inference_script not implemented yet")
+
+try:
+    from .inference import benchmark_inference
+except ImportError:
+    def benchmark_inference(model_path, test_data, **kwargs):
+        """Placeholder function for benchmarking inference"""
+        raise NotImplementedError("benchmark_inference not implemented yet")
 
 # Optional TensorRT support
 try:
