@@ -230,7 +230,7 @@ def train_single_fold(config: RETFoundConfig, fold: Optional[int] = None) -> Dic
     
     # Create model
     logger.info("Creating model...")
-    model = create_model(config)
+    model = create_model('retfound', config)
     
     # Load pretrained weights
     weights_key = config.weights_key if hasattr(config, 'weights_key') else 'cfp'
