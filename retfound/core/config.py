@@ -360,6 +360,28 @@ class RETFoundConfig:
         with open(path, 'r') as f:
             config_dict = yaml.safe_load(f)
         
+        # Handle inheritance with 'defaults' key
+        if 'defaults' in config_dict:
+            defaults = config_dict.pop('defaults')
+            if isinstance(defaults, list):
+                # Load base configurations
+                base_config_dict = {}
+                for default in defaults:
+                    if isinstance(default, str):
+                        # Load base config file
+                        base_path = path.parent / f"{default}.yaml"
+                        if base_path.exists():
+                            with open(base_path, 'r') as f:
+                                base_dict = yaml.safe_load(f)
+                                # Remove defaults from base config to avoid recursion
+                                base_dict.pop('defaults', None)
+                                base_config_dict.update(base_dict)
+                
+                # Merge base config with current config (current overrides base)
+                merged_config = base_config_dict.copy()
+                merged_config.update(config_dict)
+                config_dict = merged_config
+        
         return cls(**config_dict)
     
     @classmethod
