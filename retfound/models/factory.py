@@ -120,7 +120,7 @@ class RETFoundFactory:
         # Create model
         model_type = getattr(config, 'model_type', 'retfound')
         logger.info(f"Creating RETFound model: {model_type}")
-        logger.info(f"Number of classes: {config.num_classes}")
+        logger.info(f"Number of classes: {num_classes}")
         if unified_classes:
             logger.info("Using v6.1 unified class system")
         
@@ -170,7 +170,7 @@ class RETFoundFactory:
         # Log v6.1 specific info
         if unified_classes:
             logger.info(f"V6.1 Configuration:")
-            logger.info(f"  - Unified classes: {config.num_classes}")
+            logger.info(f"  - Unified classes: {num_classes}")
             logger.info(f"  - Modality: {modality or 'both'}")
             logger.info(f"  - Class names: {len(UNIFIED_CLASS_NAMES)} defined")
         
