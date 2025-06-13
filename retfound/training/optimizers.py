@@ -313,23 +313,28 @@ def get_parameter_groups(
                 lr_scale = 1.0
             else:
                 # Layer decay
-                lr_scale = config.layer_decay ** (num_layers - layer_id)
+                layer_decay = getattr(config, 'layer_decay', 0.75)
+                lr_scale = layer_decay ** (num_layers - layer_id)
             
             lr_scales[name] = lr_scale
             
             # Determine weight decay
-            if config.weight_decay > 0:
+            weight_decay = getattr(config, 'weight_decay', 0.01)
+            if weight_decay > 0:
                 # No weight decay for bias and normalization parameters
                 if 'bias' in name or 'norm' in name:
                     group_weight_decay = 0.0
                 else:
-                    group_weight_decay = config.weight_decay
+                    group_weight_decay = weight_decay
             else:
                 group_weight_decay = 0.0
             
+            # Get base learning rate
+            base_lr = getattr(config, 'base_lr', 1e-4)
+            
             param_groups.append({
                 'params': [param],
-                'lr': config.base_lr * lr_scale,
+                'lr': base_lr * lr_scale,
                 'weight_decay': group_weight_decay,
                 'param_name': name,
                 'lr_scale': lr_scale,
@@ -350,8 +355,9 @@ def get_parameter_groups(
             else:
                 decay_params.append(param)
         
+        weight_decay = getattr(config, 'weight_decay', 0.01)
         param_groups = [
-            {'params': decay_params, 'weight_decay': config.weight_decay},
+            {'params': decay_params, 'weight_decay': weight_decay},
             {'params': no_decay_params, 'weight_decay': 0.0}
         ]
     
@@ -372,7 +378,8 @@ def get_parameter_groups(
             if layer_groups[layer_id]:
                 name_example = layer_groups[layer_id][0][0]
                 lr_scale = layer_groups[layer_id][0][1]
-                effective_lr = config.base_lr * lr_scale
+                base_lr = getattr(config, 'base_lr', 1e-4)
+                effective_lr = base_lr * lr_scale
                 logger.info(
                     f"Layer {layer_id:2d}: LR scale={lr_scale:.4f}, "
                     f"Effective LR={effective_lr:.2e} (e.g., {name_example})"
@@ -392,8 +399,8 @@ def create_adamw(
     
     return torch.optim.AdamW(
         param_groups,
-        betas=config.adam_betas,
-        eps=config.adam_epsilon,
+        betas=getattr(config, 'adam_betas', (0.9, 0.999)),
+        eps=getattr(config, 'adam_epsilon', 1e-8),
         **kwargs
     )
 
