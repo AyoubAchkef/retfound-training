@@ -425,6 +425,10 @@ def main():
         return 1
 
 
+if __name__ == '__main__':
+    exit(main())
+
+
 def add_subparser(subparsers):
     """Add export subcommand to parser"""
     parser = subparsers.add_parser(
@@ -437,10 +441,6 @@ def add_subparser(subparsers):
     parser.set_defaults(func=run_export)
     
     return parser
-
-
-if __name__ == '__main__':
-    exit(main())
 '''
     
     # Replace metadata placeholder
