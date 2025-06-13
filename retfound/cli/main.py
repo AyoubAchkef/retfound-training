@@ -11,10 +11,19 @@ import logging
 from pathlib import Path
 from typing import Optional, List
 
-from .commands import train, evaluate, export, predict
+from .commands import train, evaluate, predict
 from .utils import setup_cli_logging, print_banner
 
 logger = logging.getLogger(__name__)
+
+# Import export with error handling
+try:
+    from .commands import export
+    EXPORT_AVAILABLE = True
+except (ImportError, AttributeError) as e:
+    logger.warning(f"Export command not available: {e}")
+    EXPORT_AVAILABLE = False
+    export = None
 
 
 def create_parser() -> argparse.ArgumentParser:
@@ -86,7 +95,8 @@ For more help on a specific command:
     # Add subcommands
     train.add_subparser(subparsers)
     evaluate.add_subparser(subparsers)
-    export.add_subparser(subparsers)
+    if EXPORT_AVAILABLE and export is not None:
+        export.add_subparser(subparsers)
     predict.add_subparser(subparsers)
     
     return parser
@@ -131,7 +141,11 @@ def main(argv: Optional[List[str]] = None) -> int:
         elif args.command == 'evaluate':
             return evaluate.run_evaluate(args)
         elif args.command == 'export':
-            return export.run_export(args)
+            if EXPORT_AVAILABLE and export is not None:
+                return export.run_export(args)
+            else:
+                logger.error("Export command is not available due to missing dependencies or configuration issues")
+                return 1
         elif args.command == 'predict':
             return predict.run_predict(args)
         else:
