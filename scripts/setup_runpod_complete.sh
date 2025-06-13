@@ -238,23 +238,58 @@ if command -v node &> /dev/null; then
 else
     warn "Node.js not found. Installing Node.js..."
     
-    # Install Node.js using NodeSource repository
-    curl -fsSL https://deb.nodesource.com/setup_18.x | sudo -E bash -
-    sudo apt-get install -y nodejs
+    # Check if we're running as root (typical on RunPod)
+    if [[ $EUID -eq 0 ]]; then
+        # Running as root - no sudo needed
+        log "Installing Node.js as root user..."
+        
+        # Update package list
+        apt-get update
+        
+        # Install Node.js using NodeSource repository
+        curl -fsSL https://deb.nodesource.com/setup_20.x | bash -
+        apt-get install -y nodejs
+        
+        # Verify installation
+        if command -v node &> /dev/null; then
+            info "Node.js installed successfully: $(node --version)"
+            info "npm version: $(npm --version)"
+        else
+            error "Node.js installation failed"
+        fi
+    else
+        # Not running as root - try with sudo
+        log "Installing Node.js with sudo..."
+        curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash -
+        sudo apt-get install -y nodejs
+    fi
     
+    # Retry frontend setup if Node.js is now available
     if command -v node &> /dev/null; then
         info "Node.js installed successfully: $(node --version)"
         
-        # Retry frontend setup
         if [[ -d "retfound/monitoring/frontend" ]]; then
+            log "Setting up frontend with newly installed Node.js..."
             cd retfound/monitoring/frontend
+            
+            # Install dependencies
             npm install
+            info "Frontend dependencies installed"
+            
+            # Build frontend for production
+            log "Building frontend for production..."
             npm run build
+            info "Frontend built successfully"
+            
             cd - > /dev/null
-            info "Frontend setup completed"
+        else
+            warn "Frontend directory not found: retfound/monitoring/frontend"
         fi
     else
         warn "Failed to install Node.js. Frontend will not be available."
+        warn "You can install Node.js manually with:"
+        warn "  curl -fsSL https://deb.nodesource.com/setup_20.x | bash -"
+        warn "  apt-get install -y nodejs"
     fi
 fi
 
@@ -388,12 +423,20 @@ export CUDA_LAUNCH_BLOCKING=0
 export TORCH_CUDNN_V8_API_ENABLED=1
 export TORCH_ALLOW_TF32_CUBLAS_OVERRIDE=1
 
-# Memory optimizations
-echo 'vm.swappiness=10' | sudo tee -a /etc/sysctl.conf
-echo 'vm.vfs_cache_pressure=50' | sudo tee -a /etc/sysctl.conf
-
-# Apply sysctl changes
-sudo sysctl -p
+# Memory optimizations (check if running as root)
+if [[ $EUID -eq 0 ]]; then
+    # Running as root - no sudo needed
+    echo 'vm.swappiness=10' | tee -a /etc/sysctl.conf
+    echo 'vm.vfs_cache_pressure=50' | tee -a /etc/sysctl.conf
+    # Apply sysctl changes
+    sysctl -p
+else
+    # Not running as root - use sudo
+    echo 'vm.swappiness=10' | sudo tee -a /etc/sysctl.conf
+    echo 'vm.vfs_cache_pressure=50' | sudo tee -a /etc/sysctl.conf
+    # Apply sysctl changes
+    sudo sysctl -p
+fi
 
 echo "System optimizations applied"
 EOF
