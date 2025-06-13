@@ -28,9 +28,15 @@ except ImportError:
     # Handle relative imports when running as script
     import sys
     sys.path.append(str(Path(__file__).parent.parent))
-    from monitoring.server import create_server
-    from monitoring.data_manager import DataManager
-    from monitoring.monitor_callback import create_monitoring_callback
+    try:
+        from monitoring.server import create_server
+        from monitoring.data_manager import DataManager
+        from monitoring.monitor_callback import create_monitoring_callback
+    except ImportError:
+        # Fallback for direct execution
+        from retfound.monitoring.server import create_server
+        from retfound.monitoring.data_manager import DataManager
+        from retfound.monitoring.monitor_callback import create_monitoring_callback
 
 
 class TrainingSimulator:

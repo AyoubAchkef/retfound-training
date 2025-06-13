@@ -24,6 +24,11 @@ class EMACallback(Callback):
         super().__init__()
         self.model = model
 
+class VisualizationCallback(Callback):
+    """Placeholder for Visualization callback"""
+    def __init__(self, **kwargs):
+        super().__init__()
+
 from typing import List
 from ...core.config import RETFoundConfig
 
@@ -109,5 +114,6 @@ __all__ = [
     'MetricsCallback',
     'LRSchedulerCallback',
     'EMACallback',
+    'VisualizationCallback',
     'create_callbacks'
 ]
