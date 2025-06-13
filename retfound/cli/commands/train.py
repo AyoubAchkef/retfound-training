@@ -10,9 +10,16 @@ from pathlib import Path
 from typing import Optional, Dict, Any, List
 import torch
 from torch.utils.data import DataLoader
-import wandb
 import json
 import numpy as np
+
+# Optional imports
+try:
+    import wandb
+    WANDB_AVAILABLE = True
+except ImportError:
+    WANDB_AVAILABLE = False
+    wandb = None
 
 from retfound.core.config import RETFoundConfig
 from retfound.core.constants import (
@@ -183,7 +190,7 @@ def setup_callbacks(config: RETFoundConfig, trial_name: str) -> List:
             log_dir=config.output_path / 'tensorboard' / trial_name
         ))
     
-    if hasattr(config.monitoring, 'use_wandb') and config.monitoring.use_wandb and wandb.run is not None:
+    if hasattr(config.monitoring, 'use_wandb') and config.monitoring.use_wandb and WANDB_AVAILABLE and wandb.run is not None:
         callbacks.append(WandbCallback(
             log_frequency=config.training.log_interval if hasattr(config.training, 'log_interval') else 10,
             log_gradients=True,
@@ -503,7 +510,7 @@ def run_train(args) -> int:
         
         # Setup W&B if enabled
         use_wandb = config.monitoring.use_wandb if hasattr(config, 'monitoring') else config.use_wandb
-        if use_wandb and not args.no_wandb:
+        if use_wandb and not args.no_wandb and WANDB_AVAILABLE:
             wandb_config = {
                 'dataset': 'CAASI v6.1',
                 'num_classes': NUM_TOTAL_CLASSES,
@@ -524,6 +531,8 @@ def run_train(args) -> int:
                 tags=args.tags or ["retfound", "v6.1", "medical", args.modality],
                 resume="allow" if args.resume else False
             )
+        elif use_wandb and not args.no_wandb and not WANDB_AVAILABLE:
+            logger.warning("W&B logging requested but wandb not available. Install with: pip install wandb")
         
         # Create output directories
         config.output_path.mkdir(parents=True, exist_ok=True)
@@ -566,7 +575,7 @@ def run_train(args) -> int:
         logger.info(f"\nAll outputs saved to: {config.output_path}")
         
         # Cleanup W&B
-        if use_wandb and wandb.run is not None:
+        if use_wandb and WANDB_AVAILABLE and wandb.run is not None:
             wandb.finish()
         
         return 0
@@ -576,7 +585,7 @@ def run_train(args) -> int:
         logger.exception("Full traceback:")
         
         # Cleanup W&B on error
-        if wandb.run is not None:
+        if WANDB_AVAILABLE and wandb.run is not None:
             wandb.finish(exit_code=1)
         
         return 1
