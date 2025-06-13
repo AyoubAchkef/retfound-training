@@ -507,3 +507,44 @@ def path_options(func):
     func = click.option('--output-path', type=click.Path(), help='Output directory')(func)
     func = click.option('--cache-dir', type=click.Path(), help='Cache directory')(func)
     return func
+
+
+def print_config(config: Dict[str, Any], title: str = "Configuration"):
+    """Print configuration in a formatted way"""
+    console = Console()
+    
+    table = Table(title=title, show_header=True)
+    table.add_column("Parameter", style="cyan", no_wrap=True)
+    table.add_column("Value", style="green")
+    
+    for key, value in config.items():
+        if isinstance(value, Path):
+            value = str(value)
+        elif isinstance(value, bool):
+            value = "✓" if value else "✗"
+        elif isinstance(value, (list, tuple)):
+            value = ", ".join(str(v) for v in value)
+        elif isinstance(value, dict):
+            value = str(value)
+        
+        table.add_row(key.replace('_', ' ').title(), str(value))
+    
+    console.print(table)
+
+
+def format_table(data: List[Dict[str, Any]], title: str = "Data") -> Table:
+    """Format data as a rich table"""
+    if not data:
+        return Table(title=title)
+    
+    table = Table(title=title, show_header=True)
+    
+    # Add columns based on first row
+    for key in data[0].keys():
+        table.add_column(key.replace('_', ' ').title(), style="cyan")
+    
+    # Add rows
+    for row in data:
+        table.add_row(*[str(v) for v in row.values()])
+    
+    return table
