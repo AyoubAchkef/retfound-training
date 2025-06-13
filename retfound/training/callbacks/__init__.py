@@ -29,6 +29,11 @@ class VisualizationCallback(Callback):
     def __init__(self, **kwargs):
         super().__init__()
 
+class WandbCallback(Callback):
+    """Placeholder for Wandb callback"""
+    def __init__(self, **kwargs):
+        super().__init__()
+
 from typing import List
 from ...core.config import RETFoundConfig
 
@@ -115,5 +120,6 @@ __all__ = [
     'LRSchedulerCallback',
     'EMACallback',
     'VisualizationCallback',
+    'WandbCallback',
     'create_callbacks'
 ]
