@@ -297,13 +297,15 @@ class RETFoundTrainer(BaseTrainer):
         # Metrics
         self.train_metrics = OphthalmologyMetrics(
             num_classes=num_classes,
-            device=self.device,
-            class_names=UNIFIED_CLASS_NAMES if num_classes == 28 else None
+            dataset_version="v6.1" if num_classes == 28 else "v4.0",
+            modality=getattr(config, 'modality', None) if hasattr(config, 'data') and hasattr(config.data, 'modality') else None,
+            monitor_critical=True
         )
         self.val_metrics = OphthalmologyMetrics(
             num_classes=num_classes,
-            device=self.device,
-            class_names=UNIFIED_CLASS_NAMES if num_classes == 28 else None
+            dataset_version="v6.1" if num_classes == 28 else "v4.0",
+            modality=getattr(config, 'modality', None) if hasattr(config, 'data') and hasattr(config.data, 'modality') else None,
+            monitor_critical=True
         )
         
         # Dataset v6.1 specific monitoring
