@@ -25,6 +25,7 @@ from .transforms import (
     create_val_transforms,
     create_test_transforms,
     create_advanced_transforms,
+    get_eval_transforms,  # Alias for create_test_transforms
     PathologyAugmentation,
     MixupCutmixTransform,
     get_class_augmentation_weight  # New v6.1 function
@@ -65,6 +66,7 @@ __all__ = [
     'create_val_transforms',
     'create_test_transforms',
     'create_advanced_transforms',
+    'get_eval_transforms',
     'PathologyAugmentation',
     'MixupCutmixTransform',
     'get_class_augmentation_weight',

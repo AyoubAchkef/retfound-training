@@ -734,3 +734,17 @@ def get_class_augmentation_weight(class_name: str) -> float:
         if key in class_name:
             return weight
     return 1.0
+
+
+# Alias for backward compatibility
+def get_eval_transforms(config: RETFoundConfig) -> Callable:
+    """
+    Get evaluation transforms (alias for create_test_transforms)
+    
+    Args:
+        config: Configuration object
+        
+    Returns:
+        Transform function
+    """
+    return create_test_transforms(config)
