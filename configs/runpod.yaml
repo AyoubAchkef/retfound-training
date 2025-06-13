@@ -16,9 +16,9 @@ cache_dir: "/workspace/cache/v6.1"
 
 # RETFound weights - RunPod paths
 weights_paths:
-  cfp: "/workspace/weights/RETFound_mae_natureCFP.pth"
-  oct: "/workspace/weights/RETFound_mae_natureOCT.pth"
-  meh: "/workspace/weights/RETFound_mae_meh.pth"
+  cfp: "/workspace/retfound-training/weights/RETFound_mae_natureCFP.pth"
+  oct: "/workspace/retfound-training/weights/RETFound_mae_natureOCT.pth"
+  meh: "/workspace/retfound-training/weights/RETFound_mae_meh.pth"
 
 # A100 optimized training configuration
 training:
