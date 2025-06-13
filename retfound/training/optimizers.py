@@ -397,11 +397,18 @@ def create_adamw(
     """Create AdamW optimizer"""
     param_groups = get_parameter_groups(model, config)
     
+    # Filter kwargs to only include valid AdamW parameters
+    valid_kwargs = {}
+    valid_adamw_params = {'lr', 'weight_decay', 'amsgrad', 'maximize', 'foreach', 'capturable', 'differentiable', 'fused'}
+    for key, value in kwargs.items():
+        if key in valid_adamw_params:
+            valid_kwargs[key] = value
+    
     return torch.optim.AdamW(
         param_groups,
         betas=getattr(config, 'adam_betas', (0.9, 0.999)),
         eps=getattr(config, 'adam_epsilon', 1e-8),
-        **kwargs
+        **valid_kwargs
     )
 
 
