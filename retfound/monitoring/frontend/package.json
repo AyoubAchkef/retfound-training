@@ -5,7 +5,9 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
+    "dev:runpod": "vite --config vite.config.runpod.ts --host 0.0.0.0 --port 5173",
     "build": "tsc && vite build",
+    "build:runpod": "tsc && vite build --config vite.config.runpod.ts",
     "preview": "vite preview",
     "lint": "eslint . --ext ts,tsx --report-unused-disable-directives --max-warnings 0",
     "type-check": "tsc --noEmit"
