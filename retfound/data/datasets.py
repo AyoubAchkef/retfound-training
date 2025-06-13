@@ -95,7 +95,13 @@ class BaseDataset(Dataset, ABC):
         
         # Apply transforms
         if self.transform is not None:
-            image = self.transform(image)
+            # Handle different transform types
+            if hasattr(self.transform, 'transform'):  # Albumentations
+                augmented = self.transform(image=image)
+                image = augmented['image']
+            else:  # torchvision
+                image = Image.fromarray(image)
+                image = self.transform(image)
         
         if self.target_transform is not None:
             target = self.target_transform(target)
