@@ -18,7 +18,7 @@ from retfound.models.factory import create_model
 from retfound.export import ModelExporter
 from retfound.export.onnx import ONNXExporter
 from retfound.export.torchscript import TorchScriptExporter
-from retfound.export.tensorrt import TensorRTExporter
+from retfound.export.tensortrt import TensorRTExporter
 from retfound.utils.logging import setup_logging
 from retfound.utils.device import get_device
 
