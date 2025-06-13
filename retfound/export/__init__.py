@@ -6,11 +6,44 @@ Export trained models to various formats for deployment.
 """
 
 from .exporter import (
-    ModelExporter,
-    ExportConfig,
-    ExportFormat,
-    export_model
+    RETFoundExporter,
 )
+
+# Create alias for backward compatibility
+ModelExporter = RETFoundExporter
+
+# Create placeholder classes/functions if they don't exist
+try:
+    from .exporter import ExportConfig
+except ImportError:
+    # Create a simple config class
+    class ExportConfig:
+        def __init__(self, **kwargs):
+            for key, value in kwargs.items():
+                setattr(self, key, value)
+
+try:
+    from .exporter import ExportFormat
+except ImportError:
+    # Create a simple enum-like class
+    class ExportFormat:
+        ONNX = "onnx"
+        TORCHSCRIPT = "torchscript"
+        TENSORRT = "tensorrt"
+
+try:
+    from .exporter import export_model
+except ImportError:
+    # Create a simple export function
+    def export_model(model, output_path, format="onnx", **kwargs):
+        """Simple export function using RETFoundExporter"""
+        exporter = RETFoundExporter(model, **kwargs)
+        if format.lower() == "onnx":
+            return exporter.export_onnx(output_path)
+        elif format.lower() == "torchscript":
+            return exporter.export_torchscript(output_path)
+        else:
+            raise ValueError(f"Unsupported format: {format}")
 
 from .onnx import (
     ONNXExporter,
