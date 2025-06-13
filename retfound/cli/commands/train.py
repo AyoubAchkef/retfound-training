@@ -273,9 +273,12 @@ def train_single_fold(config: RETFoundConfig, fold: Optional[int] = None) -> Dic
     logger.info("Creating trainer...")
     trainer = RETFoundTrainer(
         model=model,
-        config=config,
-        callbacks=callbacks
+        config=config
     )
+    
+    # Add callbacks to trainer
+    for callback in callbacks:
+        trainer.callback_handler.add_callback(callback)
     
     # Setup training components
     trainer.setup_training(data_module.train_dataset)
