@@ -19,7 +19,13 @@ logger = logging.getLogger(__name__)
 # Import export with error handling
 try:
     from .commands import export
-    EXPORT_AVAILABLE = True
+    # Check if add_subparser function exists
+    if hasattr(export, 'add_subparser') and callable(getattr(export, 'add_subparser')):
+        EXPORT_AVAILABLE = True
+    else:
+        logger.warning("Export command module loaded but add_subparser function not found")
+        EXPORT_AVAILABLE = False
+        export = None
 except (ImportError, AttributeError) as e:
     logger.warning(f"Export command not available: {e}")
     EXPORT_AVAILABLE = False
