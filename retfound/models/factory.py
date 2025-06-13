@@ -118,7 +118,8 @@ class RETFoundFactory:
             logger.info("Auto-detected v6.1 unified classes mode (28 classes)")
         
         # Create model
-        logger.info(f"Creating RETFound model: {config.model_type}")
+        model_type = getattr(config, 'model_type', 'retfound')
+        logger.info(f"Creating RETFound model: {model_type}")
         logger.info(f"Number of classes: {config.num_classes}")
         if unified_classes:
             logger.info("Using v6.1 unified class system")
