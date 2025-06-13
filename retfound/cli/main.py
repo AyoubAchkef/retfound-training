@@ -116,9 +116,8 @@ def main(argv: Optional[List[str]] = None) -> int:
         log_level = logging.DEBUG
     
     setup_cli_logging(
-        level=log_level,
-        log_file=args.log_file,
-        colorize=not args.no_color
+        verbose=log_level <= logging.INFO,
+        log_file=Path(args.log_file) if args.log_file else None
     )
     
     # Print banner for interactive sessions
@@ -128,13 +127,13 @@ def main(argv: Optional[List[str]] = None) -> int:
     try:
         # Dispatch to command
         if args.command == 'train':
-            return train.run(args)
+            return train.run_train(args)
         elif args.command == 'evaluate':
-            return evaluate.run(args)
+            return evaluate.run_evaluate(args)
         elif args.command == 'export':
-            return export.run(args)
+            return export.run_export(args)
         elif args.command == 'predict':
-            return predict.run(args)
+            return predict.run_predict(args)
         else:
             parser.error(f"Unknown command: {args.command}")
             
