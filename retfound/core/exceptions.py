@@ -87,6 +87,11 @@ class InferenceError(RETFoundError):
     pass
 
 
+class EvaluationError(RETFoundError):
+    """Raised when there's an error during model evaluation."""
+    pass
+
+
 # Utility functions for better error handling
 def handle_import_error(module_name: str, package_name: Optional[str] = None) -> None:
     """Handle import errors with helpful messages."""
