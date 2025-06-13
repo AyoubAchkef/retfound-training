@@ -77,8 +77,9 @@ def create_callbacks(
     # Metrics callback
     callbacks.append(
         MetricsCallback(
-            output_dir=getattr(config, 'output_path', 'outputs') / 'metrics',
-            log_frequency=getattr(config, 'val_frequency', 1)
+            compute_on_train=True,
+            compute_on_val=True,
+            reset_on_epoch=True
         )
     )
     
