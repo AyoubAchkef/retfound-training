@@ -382,7 +382,38 @@ class RETFoundConfig:
                 merged_config.update(config_dict)
                 config_dict = merged_config
         
-        return cls(**config_dict)
+        # Filter out unknown parameters to avoid TypeError
+        valid_params = cls._filter_valid_params(config_dict)
+        return cls(**valid_params)
+    
+    @classmethod
+    def _filter_valid_params(cls, config_dict: Dict[str, Any]) -> Dict[str, Any]:
+        """Filter out parameters that are not valid for RETFoundConfig constructor."""
+        import inspect
+        
+        # Get the constructor signature
+        sig = inspect.signature(cls.__init__)
+        valid_params = set(sig.parameters.keys()) - {'self'}
+        
+        # Filter the config dict
+        filtered_dict = {}
+        for key, value in config_dict.items():
+            if key in valid_params:
+                filtered_dict[key] = value
+            else:
+                # Handle special mappings
+                if key == 'dataset_path' and 'data' in valid_params:
+                    # Map dataset_path to data.dataset_path
+                    if 'data' not in filtered_dict:
+                        filtered_dict['data'] = {}
+                    if isinstance(filtered_dict['data'], dict):
+                        filtered_dict['data']['dataset_path'] = value
+                    else:
+                        logger.warning(f"Cannot map dataset_path to data config")
+                else:
+                    logger.warning(f"Ignoring unknown configuration parameter: {key}")
+        
+        return filtered_dict
     
     @classmethod
     def from_env(cls) -> "RETFoundConfig":
