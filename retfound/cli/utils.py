@@ -11,9 +11,16 @@ import time
 from pathlib import Path
 from typing import Optional, Dict, Any, List
 import torch
-import psutil
 import platform
 from rich.console import Console
+
+# Optional imports
+try:
+    import psutil
+    PSUTIL_AVAILABLE = True
+except ImportError:
+    PSUTIL_AVAILABLE = False
+    psutil = None
 from rich.table import Table
 from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, TimeRemainingColumn
 from rich.panel import Panel
@@ -75,8 +82,8 @@ def check_environment() -> Dict[str, Any]:
         'cuda_version': torch.version.cuda if torch.cuda.is_available() else None,
         'gpu_count': torch.cuda.device_count() if torch.cuda.is_available() else 0,
         'gpu_names': [],
-        'cpu_count': psutil.cpu_count(),
-        'ram_gb': psutil.virtual_memory().total / (1024**3),
+        'cpu_count': psutil.cpu_count() if PSUTIL_AVAILABLE else "N/A",
+        'ram_gb': psutil.virtual_memory().total / (1024**3) if PSUTIL_AVAILABLE else 0,
         'platform': platform.platform()
     }
     
