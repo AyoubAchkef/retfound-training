@@ -15,7 +15,7 @@ from datetime import datetime
 
 from retfound.core.config import RETFoundConfig
 from retfound.models.factory import create_model
-from retfound.export.exporter import ModelExporter
+from retfound.export import ModelExporter
 from retfound.export.onnx import ONNXExporter
 from retfound.export.torchscript import TorchScriptExporter
 from retfound.export.tensorrt import TensorRTExporter
