@@ -27,6 +27,7 @@ from .torchscript import (
 
 from .inference import (
     InferenceModel,
+    RETFoundPredictor,
     create_inference_script,
     benchmark_inference
 )
@@ -68,6 +69,7 @@ __all__ = [
     
     # Inference
     'InferenceModel',
+    'RETFoundPredictor',
     'create_inference_script',
     'benchmark_inference',
     
