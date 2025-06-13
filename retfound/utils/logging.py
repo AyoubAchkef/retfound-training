@@ -11,8 +11,15 @@ from pathlib import Path
 from datetime import datetime
 from typing import Optional, Union
 import platform
-import psutil
 import torch
+
+# Optional imports
+try:
+    import psutil
+    PSUTIL_AVAILABLE = True
+except ImportError:
+    PSUTIL_AVAILABLE = False
+    psutil = None
 
 
 def setup_logging(
@@ -131,11 +138,15 @@ def log_system_info(logger: Optional[logging.Logger] = None) -> None:
     
     # CPU info
     logger.info(f"CPU: {platform.processor()}")
-    logger.info(f"CPU Cores: {psutil.cpu_count(logical=False)} physical, {psutil.cpu_count()} logical")
     
-    # Memory info
-    mem = psutil.virtual_memory()
-    logger.info(f"RAM: {mem.total / 1024**3:.1f} GB total, {mem.available / 1024**3:.1f} GB available")
+    if PSUTIL_AVAILABLE:
+        logger.info(f"CPU Cores: {psutil.cpu_count(logical=False)} physical, {psutil.cpu_count()} logical")
+        
+        # Memory info
+        mem = psutil.virtual_memory()
+        logger.info(f"RAM: {mem.total / 1024**3:.1f} GB total, {mem.available / 1024**3:.1f} GB available")
+    else:
+        logger.info("CPU/Memory details: psutil not available")
     
     # GPU info
     if torch.cuda.is_available():
