@@ -112,23 +112,51 @@ Une fois Node.js installé :
 # http://0.0.0.0:8000
 ```
 
+## Problème de Permissions TypeScript
+
+Si vous rencontrez l'erreur `tsc: Permission denied` après l'installation de Node.js :
+
+```bash
+# Solution rapide
+bash fix_frontend_permissions.sh
+
+# Ou manuellement
+cd retfound/monitoring/frontend
+chmod -R 755 node_modules/
+chmod +x node_modules/.bin/*
+npx tsc && npx vite build
+```
+
 ## Support
 
 Si vous rencontrez encore des problèmes :
 
-1. Vérifiez que vous êtes bien dans le bon répertoire :
+1. **Problème de permissions TypeScript** :
+   ```bash
+   bash fix_frontend_permissions.sh
+   ```
+
+2. **Vérifiez le répertoire** :
    ```bash
    pwd  # Devrait afficher /workspace/retfound-training
    ```
 
-2. Vérifiez les permissions :
+3. **Vérifiez les permissions** :
    ```bash
    whoami  # Devrait afficher 'root'
    ```
 
-3. Vérifiez l'espace disque :
+4. **Vérifiez l'espace disque** :
    ```bash
    df -h
+   ```
+
+5. **Build manuel du frontend** :
+   ```bash
+   cd retfound/monitoring/frontend
+   npm install
+   chmod -R 755 node_modules/
+   npx vite build --mode production
    ```
 
 Le script corrigé devrait maintenant fonctionner parfaitement sur RunPod !
