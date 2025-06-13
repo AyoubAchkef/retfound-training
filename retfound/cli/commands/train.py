@@ -33,6 +33,7 @@ from retfound.training.callbacks import (
     CheckpointCallback, EarlyStoppingCallback, MetricsCallback,
     VisualizationCallback, WandbCallback, TensorBoardCallback
 )
+from retfound.training.callbacks.metrics import ClassWiseMetricsCallback, create_standard_metrics
 from retfound.utils.logging import setup_logging
 from retfound.utils.reproducibility import set_seed
 
@@ -168,11 +169,19 @@ def setup_callbacks(config: RETFoundConfig, trial_name: str) -> List:
     
     # Metrics tracking with v6.1 class names
     num_classes = config.model.num_classes if hasattr(config.model, 'num_classes') else NUM_TOTAL_CLASSES
+    
+    # Standard metrics callback
     callbacks.append(MetricsCallback(
+        metrics=create_standard_metrics(),
+        compute_on_train=True,
+        compute_on_val=True
+    ))
+    
+    # Class-wise metrics callback
+    callbacks.append(ClassWiseMetricsCallback(
         num_classes=num_classes,
         class_names=UNIFIED_CLASS_NAMES[:num_classes],
-        compute_per_class=True,
-        critical_conditions=CRITICAL_CONDITIONS if config.monitor_critical else None
+        metrics_to_track=['sensitivity', 'specificity', 'ppv', 'npv', 'f1']
     ))
     
     # Visualization
