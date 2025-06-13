@@ -457,10 +457,10 @@ def create_optimizer(
     """
     # Determine optimizer name
     if optimizer_name is None:
-        if config.use_sam:
+        if getattr(config, 'use_sam', False):
             optimizer_name = "sam_adamw"
         else:
-            optimizer_name = config.optimizer
+            optimizer_name = getattr(config, 'optimizer', 'adamw')
     
     # Create optimizer
     if optimizer_name not in OPTIMIZER_REGISTRY:
