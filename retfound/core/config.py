@@ -395,11 +395,37 @@ class RETFoundConfig:
         sig = inspect.signature(cls.__init__)
         valid_params = set(sig.parameters.keys()) - {'self'}
         
+        # Sub-config classes
+        sub_configs = {
+            'model': ModelConfig,
+            'data': DataConfig,
+            'training': TrainingConfig,
+            'optimization': OptimizationConfig,
+            'augmentation': AugmentationConfig,
+            'monitoring': MonitoringConfig,
+            'export': ExportConfig
+        }
+        
         # Filter the config dict
         filtered_dict = {}
         for key, value in config_dict.items():
             if key in valid_params:
-                filtered_dict[key] = value
+                # If it's a sub-config, filter its parameters too
+                if key in sub_configs and isinstance(value, dict):
+                    sub_config_class = sub_configs[key]
+                    sub_sig = inspect.signature(sub_config_class.__init__)
+                    sub_valid_params = set(sub_sig.parameters.keys()) - {'self'}
+                    
+                    filtered_sub_dict = {}
+                    for sub_key, sub_value in value.items():
+                        if sub_key in sub_valid_params:
+                            filtered_sub_dict[sub_key] = sub_value
+                        else:
+                            logger.warning(f"Ignoring unknown {key} parameter: {sub_key}")
+                    
+                    filtered_dict[key] = filtered_sub_dict
+                else:
+                    filtered_dict[key] = value
             else:
                 # Handle special mappings
                 if key == 'dataset_path' and 'data' in valid_params:
