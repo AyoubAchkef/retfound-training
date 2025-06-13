@@ -1,140 +1,70 @@
 #!/bin/bash
-# =============================================================================
-# Fix Frontend Build Permissions on RunPod
-# =============================================================================
-# This script fixes permission issues with TypeScript and Vite build
 
-set -e
+# RETFound Frontend Fix Script
+# This script fixes common frontend build issues by cleaning and reinstalling dependencies
 
-# Colors for output
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-BLUE='\033[0;34m'
-NC='\033[0m' # No Color
+echo "🔧 RETFound Frontend Fix Script"
+echo "================================"
 
-log() {
-    echo -e "${GREEN}[$(date +'%Y-%m-%d %H:%M:%S')] $1${NC}"
-}
+# Navigate to frontend directory
+FRONTEND_DIR="retfound/monitoring/frontend"
 
-warn() {
-    echo -e "${YELLOW}[$(date +'%Y-%m-%d %H:%M:%S')] WARNING: $1${NC}"
-}
-
-error() {
-    echo -e "${RED}[$(date +'%Y-%m-%d %H:%M:%S')] ERROR: $1${NC}"
-}
-
-info() {
-    echo -e "${BLUE}[$(date +'%Y-%m-%d %H:%M:%S')] INFO: $1${NC}"
-}
-
-echo -e "${BLUE}"
-cat << "EOF"
-╔═══════════════════════════════════════════════════════════════╗
-║              Fix Frontend Build Permissions                  ║
-║                     RunPod Solution                           ║
-╚═══════════════════════════════════════════════════════════════╝
-EOF
-echo -e "${NC}"
-
-# Check if we're in the right directory
-if [[ ! -d "retfound/monitoring/frontend" ]]; then
-    error "Frontend directory not found. Please run from project root."
+if [ ! -d "$FRONTEND_DIR" ]; then
+    echo "❌ Frontend directory not found: $FRONTEND_DIR"
     exit 1
 fi
 
-log "Fixing frontend build permissions..."
+cd "$FRONTEND_DIR"
 
-# Navigate to frontend directory
-cd retfound/monitoring/frontend
+echo "📁 Working in: $(pwd)"
 
-# Fix permissions on node_modules
-if [[ -d "node_modules" ]]; then
-    log "Fixing node_modules permissions..."
-    chmod -R 755 node_modules/
-    
-    # Specifically fix TypeScript compiler
-    if [[ -f "node_modules/.bin/tsc" ]]; then
-        chmod +x node_modules/.bin/tsc
-        info "✓ TypeScript compiler permissions fixed"
-    fi
-    
-    # Fix Vite
-    if [[ -f "node_modules/.bin/vite" ]]; then
-        chmod +x node_modules/.bin/vite
-        info "✓ Vite permissions fixed"
-    fi
-    
-    # Fix all binaries in .bin
-    if [[ -d "node_modules/.bin" ]]; then
-        chmod +x node_modules/.bin/*
-        info "✓ All node_modules binaries permissions fixed"
-    fi
+# Step 1: Clean existing installations
+echo "🧹 Cleaning existing node_modules and package-lock.json..."
+rm -rf node_modules package-lock.json 2>/dev/null || true
+
+# Step 2: Clear npm cache
+echo "🗑️  Clearing npm cache..."
+npm cache clean --force 2>/dev/null || true
+
+# Step 3: Install dependencies
+echo "📦 Installing dependencies..."
+if npm install; then
+    echo "✅ Dependencies installed successfully"
 else
-    warn "node_modules not found. Running npm install first..."
-    npm install
-    
-    # Fix permissions after install
-    chmod -R 755 node_modules/
-    chmod +x node_modules/.bin/*
+    echo "❌ Failed to install dependencies"
+    exit 1
 fi
 
-# Try building with npx (alternative method)
-log "Attempting to build frontend..."
-
-# Method 1: Try with npx
-log "Method 1: Building with npx..."
-if npx tsc && npx vite build; then
-    info "✓ Frontend built successfully with npx!"
-    echo -e "${GREEN}"
-    echo "╔═══════════════════════════════════════════════════════════════╗"
-    echo "║                Frontend Build Complete!                      ║"
-    echo "╚═══════════════════════════════════════════════════════════════╝"
-    echo -e "${NC}"
-    
-    # Check if dist directory was created
-    if [[ -d "dist" ]]; then
-        info "✓ Build output found in dist/ directory"
-        ls -la dist/
-    fi
-    
-    cd - > /dev/null
-    exit 0
+# Step 4: Fix permissions (for Unix-like systems)
+if [ "$(uname)" != "MINGW64_NT"* ] && [ "$(uname)" != "MSYS_NT"* ]; then
+    echo "🔐 Fixing permissions..."
+    chmod -R 755 node_modules/ 2>/dev/null || true
+    chmod +x node_modules/.bin/* 2>/dev/null || true
 fi
 
-# Method 2: Try without TypeScript compilation
-warn "Method 1 failed. Trying Method 2: Vite only..."
-if npx vite build --mode production; then
-    info "✓ Frontend built successfully with Vite only!"
-    cd - > /dev/null
-    exit 0
+# Step 5: Test TypeScript compilation
+echo "🔍 Testing TypeScript compilation..."
+if npx tsc --noEmit; then
+    echo "✅ TypeScript compilation successful"
+else
+    echo "❌ TypeScript compilation failed"
+    exit 1
 fi
 
-# Method 3: Install TypeScript globally
-warn "Method 2 failed. Trying Method 3: Global TypeScript..."
-npm install -g typescript
-if tsc && npx vite build; then
-    info "✓ Frontend built successfully with global TypeScript!"
-    cd - > /dev/null
-    exit 0
+# Step 6: Test build
+echo "🏗️  Testing build process..."
+if npm run build; then
+    echo "✅ Build successful"
+else
+    echo "❌ Build failed"
+    exit 1
 fi
 
-# Method 4: Skip TypeScript check
-warn "Method 3 failed. Trying Method 4: Skip TypeScript check..."
-if npx vite build --mode production --skip-ts-check; then
-    info "✓ Frontend built successfully (TypeScript check skipped)!"
-    cd - > /dev/null
-    exit 0
-fi
-
-error "All build methods failed. Manual intervention required."
-error "Try running these commands manually:"
-error "  cd retfound/monitoring/frontend"
-error "  npm install"
-error "  chmod -R 755 node_modules/"
-error "  npx tsc"
-error "  npx vite build"
-
-cd - > /dev/null
-exit 1
+echo ""
+echo "🎉 Frontend fix completed successfully!"
+echo ""
+echo "Available commands:"
+echo "  npm run dev     - Start development server"
+echo "  npm run build   - Build for production"
+echo "  npm run preview - Preview production build"
+echo ""
