@@ -69,7 +69,7 @@ class LoggingCallback(Callback):
         self.batch_times = []
         
         logger.info(f"\n{'='*70}")
-        logger.info(f"Epoch {epoch}/{trainer.config.epochs} started")
+        logger.info(f"Epoch {epoch}/{trainer.getattr(config, 'epochs', 50)} started")
         logger.info(f"{'='*70}")
     
     def on_batch_end(
@@ -195,8 +195,8 @@ class TensorBoardCallback(Callback):
             try:
                 dummy_input = torch.randn(
                     1, 3,
-                    trainer.config.input_size,
-                    trainer.config.input_size
+                    trainer.getattr(config, 'input_size', 224),
+                    trainer.getattr(config, 'input_size', 224)
                 ).to(trainer.device)
                 self.writer.add_graph(trainer.model, dummy_input)
             except Exception as e:

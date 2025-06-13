@@ -424,10 +424,10 @@ def create_sam_adamw(
     return SAM(
         param_groups,
         base_optimizer=torch.optim.AdamW,
-        rho=config.sam_rho,
-        adaptive=config.sam_adaptive,
-        betas=config.adam_betas,
-        eps=config.adam_epsilon,
+        rho=getattr(config, 'sam_rho', 0.05),
+        adaptive=getattr(config, 'sam_adaptive', False),
+        betas=getattr(config, 'adam_betas', (0.9, 0.999)),
+        eps=getattr(config, 'adam_epsilon', 1e-08),
         **kwargs
     )
 

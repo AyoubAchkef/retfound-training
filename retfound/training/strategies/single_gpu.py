@@ -39,7 +39,7 @@ class SingleGPUStrategy(TrainingStrategy):
             self._device = torch.device('cuda')
             # Set default GPU if specified
             if hasattr(config, 'gpu_id'):
-                torch.cuda.set_device(config.gpu_id)
+                torch.cuda.set_device(getattr(config, 'gpu_id', 0))
         else:
             self._device = torch.device('cpu')
             logger.warning("CUDA not available, using CPU")
@@ -87,13 +87,13 @@ class SingleGPUStrategy(TrainingStrategy):
         """Create data loader with appropriate settings"""
         return DataLoader(
             dataset,
-            batch_size=self.config.batch_size if is_train else self.config.batch_size * 2,
+            batch_size=self.getattr(config, 'batch_size', 32) if is_train else self.getattr(config, 'batch_size', 32) * 2,
             shuffle=is_train,
-            num_workers=self.config.num_workers,
-            pin_memory=self.config.pin_memory if hasattr(self.config, 'pin_memory') else True,
+            num_workers=self.getattr(config, 'num_workers', 4),
+            pin_memory=self.getattr(config, 'pin_memory', True) if hasattr(self.config, 'pin_memory') else True,
             drop_last=is_train,
-            persistent_workers=self.config.persistent_workers if hasattr(self.config, 'persistent_workers') else True,
-            prefetch_factor=self.config.prefetch_factor if hasattr(self.config, 'prefetch_factor') else 2
+            persistent_workers=self.getattr(config, 'persistent_workers', True) if hasattr(self.config, 'persistent_workers') else True,
+            prefetch_factor=self.getattr(config, 'prefetch_factor', 2) if hasattr(self.config, 'prefetch_factor') else 2
         )
     
     def backward(

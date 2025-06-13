@@ -57,8 +57,8 @@ def create_callbacks(
     # Checkpoint callback
     callbacks.append(
         CheckpointCallback(
-            checkpoint_dir=config.checkpoint_path,
-            save_frequency=config.save_frequency,
+            checkpoint_dir=getattr(config, 'checkpoint_path', 'checkpoints'),
+            save_frequency=getattr(config, 'save_frequency', 5),
             save_best=True,
             save_last=True
         )
@@ -67,8 +67,8 @@ def create_callbacks(
     # Early stopping callback
     callbacks.append(
         EarlyStoppingCallback(
-            patience=config.early_stopping_patience,
-            min_delta=config.early_stopping_min_delta,
+            patience=getattr(config, 'early_stopping_patience', 10),
+            min_delta=getattr(config, 'early_stopping_min_delta', 0.0001),
             monitor='val_accuracy',
             mode='max'
         )
@@ -77,30 +77,30 @@ def create_callbacks(
     # Metrics callback
     callbacks.append(
         MetricsCallback(
-            output_dir=config.output_path / 'metrics',
-            log_frequency=config.val_frequency
+            output_dir=getattr(config, 'output_path', 'outputs') / 'metrics',
+            log_frequency=getattr(config, 'val_frequency', 1)
         )
     )
     
     # Logging callbacks
     callbacks.append(
         LoggingCallback(
-            log_frequency=config.log_interval
+            log_frequency=getattr(config, 'log_interval', 10)
         )
     )
     
-    if config.use_tensorboard:
+    if getattr(config, 'use_tensorboard', False):
         callbacks.append(
             TensorBoardCallback(
-                log_dir=config.output_path / 'tensorboard'
+                log_dir=getattr(config, 'output_path', 'outputs') / 'tensorboard'
             )
         )
     
-    if config.use_wandb:
+    if getattr(config, 'use_wandb', False):
         callbacks.append(
             WandBCallback(
-                project=config.wandb_project,
-                entity=config.wandb_entity,
+                project=getattr(config, 'wandb_project', 'retfound'),
+                entity=getattr(config, 'wandb_entity', None),
                 config=config
             )
         )

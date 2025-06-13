@@ -44,11 +44,11 @@ class DDPStrategy(TrainingStrategy):
         
         # Override with config if provided
         if hasattr(config, 'rank'):
-            self._rank = config.rank
+            self._rank = getattr(config, 'rank', 0)
         if hasattr(config, 'local_rank'):
-            self._local_rank = config.local_rank
+            self._local_rank = getattr(config, 'local_rank', 0)
         if hasattr(config, 'world_size'):
-            self._world_size = config.world_size
+            self._world_size = getattr(config, 'world_size', 1)
         
         # Setup device
         if torch.cuda.is_available():
@@ -64,7 +64,7 @@ class DDPStrategy(TrainingStrategy):
         """Initialize distributed process group"""
         if not dist.is_initialized():
             # Get backend
-            backend = self.config.dist_backend if hasattr(self.config, 'dist_backend') else 'nccl'
+            backend = self.getattr(config, 'dist_backend', 'nccl') if hasattr(self.config, 'dist_backend') else 'nccl'
             
             # Get init method
             init_method = os.environ.get('INIT_METHOD', 'env://')
@@ -104,7 +104,7 @@ class DDPStrategy(TrainingStrategy):
         model = model.to(self._device)
         
         # Wrap with DDP
-        find_unused = self.config.find_unused_parameters if hasattr(self.config, 'find_unused_parameters') else False
+        find_unused = self.getattr(config, 'find_unused_parameters', False) if hasattr(self.config, 'find_unused_parameters') else False
         
         ddp_model = DDP(
             model,
@@ -144,12 +144,12 @@ class DDPStrategy(TrainingStrategy):
         # Create data loader
         return DataLoader(
             dataset,
-            batch_size=self.config.batch_size if is_train else self.config.batch_size * 2,
+            batch_size=self.getattr(config, 'batch_size', 32) if is_train else self.getattr(config, 'batch_size', 32) * 2,
             sampler=sampler,
-            num_workers=self.config.num_workers,
-            pin_memory=self.config.pin_memory if hasattr(self.config, 'pin_memory') else True,
-            persistent_workers=self.config.persistent_workers if hasattr(self.config, 'persistent_workers') else True,
-            prefetch_factor=self.config.prefetch_factor if hasattr(self.config, 'prefetch_factor') else 2
+            num_workers=self.getattr(config, 'num_workers', 4),
+            pin_memory=self.getattr(config, 'pin_memory', True) if hasattr(self.config, 'pin_memory') else True,
+            persistent_workers=self.getattr(config, 'persistent_workers', True) if hasattr(self.config, 'persistent_workers') else True,
+            prefetch_factor=self.getattr(config, 'prefetch_factor', 2) if hasattr(self.config, 'prefetch_factor') else 2
         )
     
     def backward(
