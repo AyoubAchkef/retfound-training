@@ -112,7 +112,8 @@ class RETFoundFactory:
             config = cls._validate_v61_config(config, unified_classes, modality)
         
         # Auto-detect v6.1 mode if num_classes is 28
-        if config.num_classes == 28 and unified_classes is None:
+        num_classes = getattr(config, 'num_classes', 28)
+        if num_classes == 28 and unified_classes is None:
             unified_classes = True
             logger.info("Auto-detected v6.1 unified classes mode (28 classes)")
         
