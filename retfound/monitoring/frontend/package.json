@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "dev:runpod": "vite --config vite.config.runpod.ts --host 0.0.0.0 --port 5173",
+    "dev:runpod": "npx vite --config vite.config.runpod.ts --host 0.0.0.0 --port 5173",
     "build": "tsc && vite build",
     "build:runpod": "tsc && vite build --config vite.config.runpod.ts",
     "preview": "vite preview",
