@@ -42,11 +42,24 @@ def fix_albumentations_transforms():
 \1    augmented = self.transform(image=image)
 \1    image = augmented['image']
 \1else:  # torchvision
-\1    image = Image.fromarray(image)
+\1    if isinstance(image, np.ndarray):
+\1        image = Image.fromarray(image)
 \1    image = self.transform(image)''')
         ]
         
         changes_made = 0
+        
+        # Correction spéciale pour Image.fromarray sur des objets PIL
+        image_fromarray_pattern = r'(\s+)image = Image\.fromarray\(image\)(?!\s*\n\s*if)'
+        if re.search(image_fromarray_pattern, content):
+            content = re.sub(
+                image_fromarray_pattern,
+                r'''\1if isinstance(image, np.ndarray):
+\1    image = Image.fromarray(image)''',
+                content
+            )
+            changes_made += 1
+            print("✅ Correction Image.fromarray appliquée")
         
         for pattern, replacement in patterns_to_fix:
             if re.search(pattern, content):
