@@ -20,8 +20,16 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
-from .data_manager import DataManager
-from .api_routes import create_api_routes
+try:
+    from .data_manager import DataManager
+    from .api_routes import create_api_routes
+except ImportError:
+    # Fallback for direct execution
+    import sys
+    from pathlib import Path
+    sys.path.insert(0, str(Path(__file__).parent.parent.parent))
+    from retfound.monitoring.data_manager import DataManager
+    from retfound.monitoring.api_routes import create_api_routes
 
 logger = logging.getLogger(__name__)
 
